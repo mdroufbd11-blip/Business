@@ -388,8 +388,7 @@ if menu == "ড্যাশবোর্ড ও বিক্রি":
     INSERT INTO sales (customer, product, quantity, total_amount, profit)
     VALUES (?, ?, ?, ?, ?)
 ''', (customer_name, selected_product, quantity, total_amount, profit))
-conn.commit()
-                st.success(
+conn.commit()st.success(
                 f" সফলভাবে {customer_name}-এর কাছে বিক্রি এন্ট্রি করা হয়েছে!"
                 )
 
