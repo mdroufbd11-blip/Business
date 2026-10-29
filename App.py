@@ -334,5 +334,4 @@ menu = st.sidebar.selectbox(
 )
 
 # Filter out out-of-stock items for sales
-available_products = 
-    p for p in st.session_state.products if "🟢" in p["name"] or p["buy_price"] > 0
+available_products = p for p in st.session_state.products if "🟢" in p["name"] or p["buy_price"] > 0
