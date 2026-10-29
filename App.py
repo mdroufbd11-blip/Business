@@ -460,4 +460,4 @@ elif menu == "বিক্রির ইতিহাস":
 total_profit = df_sales["Profit"].sum()
 st.success(f"💰 মোট সম্ভাব্য লাভ: ৳ {total_profit}")
   else:
-    st.info("এখনো কোনো বিক্রির তথ্য যোগ করা হয়নি।")
+  st.info("এখনো কোনো বিক্রির তথ্য যোগ করা হয়নি।")
