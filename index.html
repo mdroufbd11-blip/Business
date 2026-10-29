@@ -3,14 +3,52 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>কৃষি প্যাকেজিং হিসাব</title>
+    <title>কৃষি প্যাকেজিং হিসাব ও ড্যাশবোর্ড</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <h1>কৃষি প্যাকেজিং হিসাব ও ড্যাশবোর্ড</h1>
-    <div id="app">
-        <!-- এখানে আপনার এআই স্টুডিওর মূল ডিজাইন ও ফর্মের কোডগুলো বসবে -->
+    <div class="container">
+        <h1>কৃষি প্যাকেজিং হিসাব ও ড্যাশবোর্ড</h1>
+        
+        <div class="form-section">
+            <h3>নতুন পণ্য বা লেনদেন যোগ করুন</h3>
+            <form id="item-form">
+                <input type="text" id="item-name" placeholder="পণ্যের নাম (যেমন: প্লাস্টিক ক্রেট, সুতা)" required>
+                <input type="number" id="item-qty" placeholder="পরিমাণ" required>
+                <input type="number" id="item-price" placeholder="মূল্য (টাকা)" required>
+                <button type="submit">সংরক্ষণ করুন</button>
+            </form>
+        </div>
+
+        <div class="dashboard-stats">
+            <div class="stat-card">
+                <h3>মোট আইটেম</h3>
+                <p id="total-items">০</p>
+            </div>
+            <div class="stat-card">
+                <h3>মোট খরচ/মূল্য</h3>
+                <p id="total-cost">০ টাকা</p>
+            </div>
+        </div>
+
+        <div class="table-section">
+            <h3>স্টক ও ক্রেতার হিসাব তালিকা</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>পণ্যের নাম</th>
+                        <th>পরিমাণ</th>
+                        <th>মূল্য</th>
+                        <th>অ্যাকশন</th>
+                    </tr>
+                </thead>
+                <tbody id="table-body">
+                    <!-- ডেটা এখানে ডায়নামিকালি যুক্ত হবে -->
+                </tbody>
+            </table>
+        </div>
     </div>
+
     <script src="script.js"></script>
 </body>
 </html>
