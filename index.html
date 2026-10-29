@@ -1,21 +1,179 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Agricultural Packaging & Inventory Management</title>
-    <meta name="description" content="Comprehensive agricultural packaging inventory, point of sale, stock management and profit tracking system in Bengali and English." />
-    <meta property="og:title" content="Agricultural Packaging & Inventory Management" />
-    <meta property="og:description" content="Comprehensive agricultural packaging inventory, point of sale, stock management and profit tracking system in Bengali and English." />
-    <meta property="og:type" content="website" />
-    <meta name="twitter:card" content="summary_large_image" />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>কৃষি প্যাকেজিং হিসাব - Agricultural Packaging Inventory & POS</title>
+  <meta name="description" content="Standalone Agricultural Packaging Inventory, POS and Profit Management System" />
+  
+  <!-- Google Fonts: Hind Siliguri, Plus Jakarta Sans, JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Standalone Stylesheet -->
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
 
+  <!-- Top Sticky Navigation Bar -->
+  <header class="top-header no-print">
+    <div class="container">
+      <div class="header-inner">
+        <!-- Brand Wordmark -->
+        <a href="#" class="brand-zone" onclick="state.currentTab='dashboard'; render(); return false;">
+          <div class="brand-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m7.5 4.27 9 5.15"/>
+              <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>
+              <path d="m3.3 7 8.7 5 8.7-5"/>
+              <path d="M12 22V12"/>
+            </svg>
+          </div>
+          <span>কৃষি প্যাকেজিং হিসাব</span>
+        </a>
+
+        <!-- Desktop Navigation Tabs -->
+        <nav class="nav-links">
+          <button class="nav-item active" data-tab="dashboard">ড্যাশবোর্ড ও বিক্রি</button>
+          <button class="nav-item" data-tab="products">পণ্যের তালিকা ও স্টক</button>
+          <button class="nav-item" data-tab="history">বিক্রির ইতিহাস ও খতিয়ান</button>
+          <button class="nav-item" data-tab="restock">স্টক রিস্টক ও অডিট</button>
+        </nav>
+
+        <!-- Action Zone -->
+        <div class="action-zone">
+          <button id="lang-toggle-btn" class="btn btn-outline btn-sm">English</button>
+          <button id="reset-data-btn" class="btn-icon" title="নমুনা ডেটায় রিসেট করুন">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+              <path d="M3 3v5h5"/>
+              <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+              <path d="M16 21h5v-5"/>
+            </svg>
+          </button>
+          <button class="btn btn-primary" onclick="state.currentTab='dashboard'; render();">
+            <span>+</span>
+            <span>নতুন বিক্রি</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mobile Subnav Bar -->
+    <div class="mobile-nav">
+      <button class="mobile-nav-item active" data-tab="dashboard">ড্যাশবোর্ড</button>
+      <button class="mobile-nav-item" data-tab="products">পণ্য তালিকা</button>
+      <button class="mobile-nav-item" data-tab="history">বিক্রির ইতিহাস</button>
+      <button class="mobile-nav-item" data-tab="restock">রিস্টক</button>
+    </div>
+  </header>
+
+  <!-- Main Viewport -->
+  <main>
+    <div class="container" id="app-main-content">
+      <!-- Content populated dynamically by app.js -->
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="no-print">
+    <div class="container" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+      <div>কৃষি প্যাকেজিং ও হিসাব ইনভেন্টরি ম্যানেজমেন্ট সিস্টেম</div>
+      <div>মুদ্রা: ৳ (টাকা) · ২৯টি প্যাকেজিং ভ্যারিয়েন্ট সক্রিয়</div>
+    </div>
+  </footer>
+
+  <!-- Invoice / Cash Memo Modal -->
+  <div id="invoice-modal-overlay" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header no-print">
+        <div style="display:flex; align-items:center; gap:8px; font-weight:700; color:var(--color-primary)">
+          <span>✓</span>
+          <span>ক্যাশ মেমো ও বিক্রয় রসিদ</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button class="btn btn-primary btn-sm" onclick="printInvoice()">
+            🖨️ প্রিন্ট করুন
+          </button>
+          <button class="btn-icon" onclick="closeInvoiceModal()">✕</button>
+        </div>
+      </div>
+      <div class="modal-body" id="printable-cash-memo">
+        <!-- Rendered by app.js -->
+      </div>
+      <div class="modal-footer no-print">
+        <button class="btn btn-outline" onclick="closeInvoiceModal()">বন্ধ করুন</button>
+        <button class="btn btn-primary" onclick="printInvoice()">রসিদ প্রিন্ট করুন</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add / Edit Product Modal -->
+  <div id="product-modal-overlay" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="product-modal-title" style="font-size:1rem; font-weight:700">পণ্য তথ্য</h3>
+        <button class="btn-icon" onclick="closeProductModal()">✕</button>
+      </div>
+      <form id="product-modal-form">
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">পণ্যের নাম ও সাইজ *</label>
+            <input type="text" id="modal-prod-name" class="form-control" placeholder="যেমন: ক্যারেট - ১নং" required />
+          </div>
+          <div class="grid-2 form-group">
+            <div>
+              <label class="form-label">ক্যাটাগরি *</label>
+              <select id="modal-prod-category" class="form-control">
+                <option value="ক্যারেট">ক্যারেট</option>
+                <option value="কাগজ">কাগজ</option>
+                <option value="অন্যান্য">অন্যান্য</option>
+                <option value="বস্তা (পানি)">বস্তা (পানি)</option>
+                <option value="বস্তা (সাদা)">বস্তা (সাদা)</option>
+                <option value="বস্তা (নিল)">বস্তা (নিল)</option>
+                <option value="বস্তা (নেট)">বস্তা (নেট)</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">পরিমাপক ইউনিট *</label>
+              <select id="modal-prod-unit" class="form-control">
+                <option value="পিস">পিস</option>
+                <option value="কেজি">কেজি</option>
+                <option value="জোড়া">জোড়া</option>
+              </select>
+            </div>
+          </div>
+          <div class="grid-2 form-group">
+            <div>
+              <label class="form-label">ক্রয়মূল্য (৳) *</label>
+              <input type="number" id="modal-prod-buy" class="form-control font-mono" min="0" step="any" required />
+            </div>
+            <div>
+              <label class="form-label">বিক্রয়মূল্য (৳) *</label>
+              <input type="number" id="modal-prod-sell" class="form-control font-mono" min="0" step="any" required />
+            </div>
+          </div>
+          <div class="grid-2 form-group">
+            <div>
+              <label class="form-label">বর্তমান স্টক *</label>
+              <input type="number" id="modal-prod-stock" class="form-control font-mono" min="0" step="any" required />
+            </div>
+            <div>
+              <label class="form-label">কম স্টক অ্যালার্ট সীমা</label>
+              <input type="number" id="modal-prod-alert" class="form-control font-mono" min="1" value="20" />
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" onclick="closeProductModal()">বাতিল</button>
+          <button type="submit" class="btn btn-primary">সংরক্ষণ করুন</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Standalone Script -->
+  <script src="./app.js"></script>
+</body>
+</html>
