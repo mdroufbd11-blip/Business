@@ -1,72 +1,21 @@
-<!DOCTYPE html>
-<html lang="bn">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>কৃষি প্যাকেজিং হিসাব ও ড্যাশবোর্ড</title>
-    <link rel="stylesheet" href="style.css">
-</head>
-<body>
-    <div class="container">
-        <h1>কৃষি প্যাকেজিং হিসাব ও ড্যাশবোর্ড</h1>
-        <p class="subtitle">মজুদ পণ্য ও লেনদেন ম্যানেজমেন্ট</p>
-
-        <!-- ফর্ম সেকশন -->
-        <div class="form-section">
-            <h2>নতুন কাস্টমার সেলস এন্ট্রি (POS)</h2>
-            <form id="sales-form">
-                <label for="customer-name">কাস্টমারের নাম:</label>
-                <input type="text" id="customer-name" placeholder="ক্রেতার নাম বা প্রতিষ্ঠান লিখুন" required>
-
-                <label for="product-select">পণ্য নির্বাচন করুন:</label>
-                <select id="product-select">
-                    <option value="ক্যারেট (Plastic Crate)">ক্যারেট (Plastic Crate)</option>
-                    <option value="বস্তা (Jute Sack)">বস্তা (Jute Sack)</option>
-                    <option value="নেট ব্যাগ (Mesh Net Bag)">নেট ব্যাগ (Mesh Net Bag)</option>
-                    <option value="রিম পেপার (Paper Ream)">রিম পেপার (Paper Ream)</option>
-                </select>
-
-                <label for="quantity">পরিমাণ (পিস/সংখ্যা):</label>
-                <input type="number" id="quantity" placeholder="পরিমাণ লিখুন" required>
-
-                <label for="price">মূল্য (টাকা):</label>
-                <input type="number" id="price" placeholder="মোট দাম লিখুন" required>
-
-                <button type="submit">বিক্রি নিশ্চিত করুন (Confirm Sale)</button>
-            </form>
-        </div>
-
-        <!-- ড্যাশবোর্ড স্ট্যাটস -->
-        <div class="dashboard-stats">
-            <div class="stat-card">
-                <h3>মোট আইটেম</h3>
-                <p id="total-items">০</p>
-            </div>
-            <div class="stat-card">
-                <h3>মোট খরচ/মূল্য</h3>
-                <p id="total-cost">০ টাকা</p>
-            </div>
-        </div>
-
-        <!-- স্টক ও ক্রেতার হিসাব তালিকা -->
-        <div class="table-section">
-            <h2>স্টক ও ক্রেতার হিসাব তালিকা</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>পাপের নাম</th>
-                        <th>পরিমাণ</th>
-                        <th>মূল্য</th>
-                        <th>অ্যাকশন</th>
-                    </tr>
-                </thead>
-                <tbody id="table-body">
-                    <!-- ডাটা ডায়নামিকালি যুক্ত হবে -->
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <script src="script.js"></script>
-</body>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agricultural Packaging & Inventory Management</title>
+    <meta name="description" content="Comprehensive agricultural packaging inventory, point of sale, stock management and profit tracking system in Bengali and English." />
+    <meta property="og:title" content="Agricultural Packaging & Inventory Management" />
+    <meta property="og:description" content="Comprehensive agricultural packaging inventory, point of sale, stock management and profit tracking system in Bengali and English." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>
+
