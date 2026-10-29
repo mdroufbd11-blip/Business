@@ -1,3 +1,16 @@
+# ডাটাবেজ থেকে আগের সব সেলস ডেটা লোড করা
+sales_data_from_db = cursor.execute('SELECT customer, product, quantity, total_amount, profit FROM sales').fetchall()
+
+# সেশন স্টেটে ডেটাগুলো যুক্ত করা যাতে অ্যাপে শো করে
+st.session_state.sales = []
+for row in sales_data_from_db:
+    st.session_state.sales.append({
+        "Customer": row[0],
+        "Product": row[1],
+        "Quantity": row[2],
+        "Total Amount": row[3],
+        "Profit": row[4]
+    })
 import sqlite3 
 conn = sqlite3.connect('sales_data.db')
 cursor = conn.cursor()
