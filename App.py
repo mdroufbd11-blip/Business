@@ -162,7 +162,7 @@ if "products" not in st.session_state:
           "category": "অন্যান্য",
           "buy_price": 65,
           "sell_price": 70,
-[10/29/2026 9:21 PM] @: "unit": "জোড়া",
+          "unit": "জোড়া",
           "stock": 50,
       },
       # Sacks (Water, White, Blue, Net)
@@ -323,7 +323,7 @@ if "products" not in st.session_state:
 
 if "sales" not in st.session_state:
   st.session_state.sales = []
-[10/29/2026 9:21 PM] @: # Sidebar Navigation
+# Sidebar Navigation
 st.sidebar.title("📦 প্যাকেজিং হিসাব")
 menu = st.sidebar.selectbox(
     "মেনু নির্বাচন করুন",
