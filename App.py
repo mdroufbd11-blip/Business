@@ -9,7 +9,7 @@ st.set_page_config(
     layout="wide",
 )
 
-# Custom Styling for Clean Look (ড্যাশবোর্ড ও কার্ডের ডিজাইন উন্নত করার জন্য)
+# Custom Styling for Clean Look (ডিজাইন ও কার্ড লেআউট উন্নত করার জন্য)
 st.markdown(
     """
     <style>
@@ -55,10 +55,9 @@ for row in sales_data_from_db:
       "Profit": row[4],
   })
 
-# Initialize Products Data based on User Input
+# Initialize Products Data
 if "products" not in st.session_state:
   st.session_state.products = [
-      # Crate & Paper & General Items
       {
           "id": 1,
           "name": "ক্যারেট - ১নং",
@@ -154,9 +153,9 @@ if "products" not in st.session_state:
           "name": "ফম",
           "category": "অন্যান্য",
           "buy_price": 1,
-"sell_price": 2,
+          "sell_price": 2,
           "unit": "পিস",
-          "stock": 500,
+"stock": 500,
       },
       {
           "id": 12,
@@ -167,7 +166,6 @@ if "products" not in st.session_state:
           "unit": "জোড়া",
           "stock": 50,
       },
-      # Sacks (Water, White, Blue, Net)
       {
           "id": 13,
           "name": "পানি - ২৪/৪২ (🟢 উপলব্ধ)",
@@ -308,7 +306,7 @@ if "products" not in st.session_state:
           "name": "নেট - ৩০/৫২ (🟢 উপলব্ধ)",
           "category": "বস্তা (নেট)",
           "buy_price": 26,
-"sell_price": 34,
+          "sell_price": 34,
           "unit": "পিস",
           "stock": 150,
       },
@@ -322,7 +320,6 @@ if "products" not in st.session_state:
           "stock": 150,
       },
   ]
-
 if "sales" not in st.session_state:
   st.session_state.sales = []
 
@@ -333,5 +330,105 @@ menu = st.sidebar.selectbox(
     ["ড্যাশবোর্ড ও বিক্রি", "পণ্যের তালিকা ও দাম", "বিক্রির ইতিহাস"],
 )
 
-# Filter out out-of-stock items for sales
-available_products = [p for p in st.session_state.products if "🟢" in p["name"] or p["buy_price"] > 0]
+# Filter available products for sales
+available_products = [
+    p for p in st.session_state.products if "🟢" in p["name"] or p["buy_price"] > 0
+]
+
+if menu == "ড্যাশবোর্ড ও বিক্রি":
+  st.title("🛍 নতুন বিক্রি এন্ট্রি ও ড্যাশবোর্ড")
+
+  col1, col2, col3 = st.columns(3)
+  total_products = len(st.session_state.products)
+  active_sales_count = len(st.session_state.sales)
+  total_revenue = sum([s["Total Amount"] for s in st.session_state.sales])
+
+  col1.metric("মোট পণ্যের ধরন", f"{total_products} টি")
+  col2.metric("মোট বিক্রির হিসাব", f"{active_sales_count} বার")
+  col3.metric("মোট বিক্রয়মূল্য", f"৳ {total_revenue}")
+
+  st.markdown("---")
+
+  st.subheader("📝 নতুন কাস্টমার সেলস এন্ট্রি")
+  with st.form("sales_form"):
+    customer_name = st.text_input("কাস্টমারের নাম")
+
+    product_options = {p["name"]: p for p in available_products}
+    selected_product_name = st.selectbox(
+        "পণ্য নির্বাচন করুন", list(product_options.keys())
+    )
+
+    selected_product = product_options[selected_product_name]
+    st.info(
+        f"💡 ক্রয়মূল্য: ৳{selected_product['buy_price']} | বিক্রয়মূল্য:"
+        f" ৳{selected_product['sell_price']} প্রতি {selected_product['unit']}"
+    )
+
+    quantity = st.number_input(
+        f"পরিমাণ ({selected_product['unit']})",
+        min_value=1.0,
+        value=1.0,
+        step=1.0,
+    )
+
+    submitted = st.form_submit_button("✅ বিক্রি নিশ্চিত করুন")
+
+    if submitted:
+      if not customer_name:
+        st.error("দয়া করে কাস্টমারের নাম লিখুন!")
+      else:
+        total_amount = quantity * selected_product["sell_price"]
+        total_cost = quantity * selected_product["buy_price"]
+        profit = total_amount - total_cost
+
+        sale_record = {
+            "Customer": customer_name,
+            "Product": selected_product["name"],
+            "Quantity": quantity,
+            "Unit": selected_product["unit"],
+            "Total Amount": total_amount,
+            "Profit": profit,
+            "Date": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        st.session_state.sales.append(sale_record)
+
+        cursor.execute(
+            """
+            INSERT INTO sales (customer, product, quantity, total_amount, profit)
+            VALUES (?, ?, ?, ?, ?)
+        """,
+            (
+                customer_name,
+                selected_product["name"],
+                quantity,
+                total_amount,
+                profit,
+            ),
+        )
+        conn.commit()
+        st.success(
+            f"সফলভাবে {customer_name}-এর কাছে বিক্রি এন্ট্রি করা হয়েছে!"
+        )
+
+elif menu == "পণ্যের তালিকা ও দাম":
+  st.title("📋 পণ্যের স্টক ও মূল্য তালিকা")
+
+  df_products = pd.DataFrame(st.session_state.products)
+  st.dataframe(
+      df_products[
+          ["name", "category", "buy_price", "sell_price", "unit", "stock"]
+      ],
+      use_container_width=True,
+  )
+
+elif menu == "বিক্রির ইতিহাস":
+  st.title("📊 অতীতের বিক্রয় ও লাভ-ক্ষতির হিসাব")
+
+  if len(st.session_state.sales) > 0:
+    df_sales = pd.DataFrame(st.session_state.sales)
+    st.dataframe(df_sales, use_container_width=True)
+
+    total_profit = df_sales["Profit"].sum()
+    st.success(f"💰 মোট সম্ভাব্য লাভ: ৳ {total_profit}")
+  else:
+    st.info("এখনো কোনো বিক্রির তথ্য যোগ করা হয়নি।")
