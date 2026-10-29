@@ -1,3 +1,17 @@
+import sqlite3 
+conn = sqlite3.connect('sales_data.db')
+cursor = conn.cursor()
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS sales (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer TEXT,
+        product TEXT,
+        quantity INTEGER,
+        total_amount REAL,
+        profit REAL
+    )
+''')
+conn.commit()
 import streamlit as st
 import pandas as pd
 
@@ -357,6 +371,11 @@ if menu == "ড্যাশবোর্ড ও বিক্রি":
                     "Date": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
                 }
                 st.session_state.sales.append(sale_record)
+                cursor.execute('''
+    INSERT INTO sales (customer, product, quantity, total_amount, profit)
+    VALUES (?, ?, ?, ?, ?)
+''', (customer_name, selected_product, quantity, total_amount, profit))
+conn.commit()
                 st.success(
                     f" সফলভাবে {customer_name}-এর কাছে বিক্রি এন্ট্রি করা হয়েছে!"
                 )
