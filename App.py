@@ -9,14 +9,43 @@ st.set_page_config(
     layout="wide",
 )
 
-# Custom Styling for Clean Look (ডিজাইন ও কার্ড লেআউট উন্নত করার জন্য)
+# Custom Styling for Modern & Clean Look
 st.markdown(
     """
     <style>
-    .main { background-color: #f4f6f9; }
-    .stMetric { background-color: #ffffff; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border-left: 5px solid #2e7d32; }
-    .stForm { background-color: #ffffff; padding: 25px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
-    h1, h2, h3 { color: #1b5e20; }
+    .main { 
+        background-color: #f8f9fa; 
+    }
+    .stMetric { 
+        background-color: #ffffff; 
+        padding: 20px; 
+        border-radius: 12px; 
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05); 
+        border-left: 5px solid #2e7d32; 
+    }
+    .stForm { 
+        background-color: #ffffff; 
+        padding: 25px; 
+        border-radius: 12px; 
+        box-shadow: 0 4px 15px rgba(0,0,0,0.05); 
+        border: 1px solid #e0e0e0;
+    }
+    h1, h2, h3 { 
+        color: #1b5e20; 
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    .stButton>button {
+        background-color: #2e7d32;
+        color: white;
+        border-radius: 8px;
+        padding: 10px 20px;
+        font-weight: bold;
+        border: none;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    .stButton>button:hover {
+        background-color: #1b5e20;
+    }
     </style>
 """,
     unsafe_allow_html=True,
@@ -133,7 +162,7 @@ if "products" not in st.session_state:
       {
           "id": 9,
           "name": "চান্দি",
-          "category": "অন্যান্য",
+"category": "অন্যান্য",
           "buy_price": 9,
           "sell_price": 15,
           "unit": "পিস",
@@ -155,7 +184,7 @@ if "products" not in st.session_state:
           "buy_price": 1,
           "sell_price": 2,
           "unit": "পিস",
-"stock": 500,
+          "stock": 500,
       },
       {
           "id": 12,
@@ -289,7 +318,7 @@ if "products" not in st.session_state:
           "category": "বস্তা (নেট)",
           "buy_price": 24,
           "sell_price": 28,
-          "unit": "পিস",
+"unit": "পিস",
           "stock": 150,
       },
       {
@@ -320,6 +349,7 @@ if "products" not in st.session_state:
           "stock": 150,
       },
   ]
+
 if "sales" not in st.session_state:
   st.session_state.sales = []
 
@@ -427,8 +457,7 @@ elif menu == "বিক্রির ইতিহাস":
   if len(st.session_state.sales) > 0:
     df_sales = pd.DataFrame(st.session_state.sales)
     st.dataframe(df_sales, use_container_width=True)
-
-    total_profit = df_sales["Profit"].sum()
+total_profit = df_sales["Profit"].sum()
     st.success(f"💰 মোট সম্ভাব্য লাভ: ৳ {total_profit}")
   else:
     st.info("এখনো কোনো বিক্রির তথ্য যোগ করা হয়নি।")
