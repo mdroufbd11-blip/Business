@@ -69,35 +69,52 @@ let state = {
 };
 
 // LocalStorage helpers
-function loadState() {
-  try {
-    const savedProducts = localStorage.getItem('standalone_agri_products');
-    state.products = savedProducts ? JSON.parse(savedProducts) : JSON.parse(JSON.stringify(INITIAL_PRODUCTS));
-  } catch (e) {
-    state.products = JSON.parse(JSON.stringify(INITIAL_PRODUCTS));
-  }
+async function loadState() {
+    try {
+        // সুপারবেজ থেকে প্রোডাক্টস ও সেলস ডাটা ফেচ করা
+        const { data: productsData, error: prodError } = await supabaseClient.from('products').select('*');
+        const { data: salesData, error: salesError } = await supabaseClient.from('sales').select('*');
 
-  try {
-    const savedSales = localStorage.getItem('standalone_agri_sales');
-    state.sales = savedSales ? JSON.parse(savedSales) : [];
-  } catch (e) {
-    state.sales = [];
-  }
+        if (prodError) console.error('Error loading products:', prodError);
+        if (salesError) console.error('Error loading sales:', salesError);
 
-  try {
-    const savedLang = localStorage.getItem('standalone_agri_lang');
-    if (savedLang) state.lang = savedLang;
-  } catch (e) {}
+        state.products = productsData && productsData.length > 0 ? productsData : INITIAL_PRODUCTS;
+        state.sales = salesData || [];
+    } catch (error) {
+        console.error('Failed to load from Supabase:', error);
+        state.products = INITIAL_PRODUCTS;
+        state.sales = [];
+    }
+    render();
 }
 
-function saveProducts() {
-  localStorage.setItem('standalone_agri_products', JSON.stringify(state.products));
+async function saveProducts() {
+    try {
+        const { error } = await supabaseClient
+            .from('products')
+            .upsert(state.products);
+        
+        if (error) console.error('Error saving products:', error);
+    } catch (error) {
+        console.error('Failed to save products to Supabase:', error);
+    }
 }
 
-function saveSales() {
-  localStorage.setItem('standalone_agri_sales', JSON.stringify(state.sales));
+async function saveSales() {
+    try {
+        // নতুন সেল এন্ট্রি সুপারবেজে পাঠানো
+        const latestSale = state.sales[state.sales.length - 1];
+        if (latestSale) {
+            const { error } = await supabaseClient
+                .from('sales')
+                .insert([latestSale]);
+            
+            if (error) console.error('Error saving sale:', error);
+        }
+    } catch (error) {
+        console.error('Failed to save sale to Supabase:', error);
+    }
 }
-
 // Helpers
 function formatTaka(num) {
   return '৳ ' + (Math.round((num || 0) * 100) / 100).toLocaleString('en-US');
