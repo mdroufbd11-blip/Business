@@ -1,6 +1,6 @@
-const SUPABASE_URL = 'https://mbjgvsivtkavpvtqwhsb.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_satWtSpdLxBaJ2FgXY3GJg_co5w-3ZD';
-const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+var SUPABASE_URL = 'https://mbjgvsivtkavpvtqwhsb.supabase.co';
+var SUPABASE_ANON_KEY = 'sb_publishable_satWtSpdLxBaJ2FgXY3GJg_co5w-3ZD';
+var supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 /**
  * Agricultural Packaging Inventory & POS (কৃষি প্যাকেজিং হিসাব)
  * Clean, Standalone Vanilla JavaScript for GitHub Pages & Vercel
