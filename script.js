@@ -450,7 +450,7 @@ window.updatePosPreview = function() {
   }
 
   const isBn = state.lang === 'bn';
-  preview.innerHTML = <div style="padding:10px; background:#f4f4f4; border-radius:5px;"><strong>${prod.name}</strong> (${isBn ? 'স্টক' : 'Stock'}: ${prod.stock} ${prod.unit}) - ${isBn ? 'দর' : 'Rate'}: ${prod.sell_price} টাকা</div>;
+  preview.innerHTML = '<div style="padding:10px; background:#f4f4f4; border-radius:5px;"><strong>' + prod.name + '</strong> (' + (isBn ? 'স্টক' : 'Stock') + ': ' + prod.stock + ' ' + prod.unit + ') - ' + (isBn ? 'দর' : 'Rate') + ': ' + prod.sell_price + ' টাকা</div>';
 };
     <div class="product-preview-stats">
       <div class="mini-stat">
