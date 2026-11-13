@@ -8,7 +8,7 @@ var supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
  */
 
 // Initial 29 Products from Streamlit application
-const INITIAL_PRODUCTS = [
+var INITIAL_PRODUCTS = [
   // Crate & Paper & General Items
   { id: 1, name: "ক্যারেট - ১নং", category: "ক্যারেট", buy_price: 260, sell_price: 300, unit: "পিস", stock: 50, minStockAlert: 15 },
   { id: 2, name: "ক্যারেট - ২নং", category: "ক্যারেট", buy_price: 180, sell_price: 200, unit: "পিস", stock: 50, minStockAlert: 15 },
