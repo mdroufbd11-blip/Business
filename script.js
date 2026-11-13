@@ -456,8 +456,6 @@ window.updatePosPreview = function() {
   preview.innerHTML = '<div style="padding:10px; background:#f4f4f4; border-radius:5px;"><strong>' + prod.name + '</strong> (' + stockLabel + ': ' + prod.stock + ' ' + prod.unit + ') - ' + rateLabel + ': ' + prod.sell_price + ' টাকা</div>';
 };
 
-
-  updatePosCalculations();
 window.updatePosCalculations = function() {
   const calcBox = document.getElementById('pos-calculations-box');
   const select = document.getElementById('pos-product-select');
