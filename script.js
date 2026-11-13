@@ -7,6 +7,7 @@ var supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
  * Zero dependencies, works directly in any modern browser!
  */
 
+
 // Initial 29 Products from Streamlit application
 var INITIAL_PRODUCTS = [
   // Crate & Paper & General Items
