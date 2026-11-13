@@ -455,25 +455,6 @@ window.updatePosPreview = function() {
 
   preview.innerHTML = '<div style="padding:10px; background:#f4f4f4; border-radius:5px;"><strong>' + prod.name + '</strong> (' + stockLabel + ': ' + prod.stock + ' ' + prod.unit + ') - ' + rateLabel + ': ' + prod.sell_price + ' টাকা</div>';
 };
-    <div class="product-preview-stats">
-      <div class="mini-stat">
-        <span class="mini-stat-label">${isBn ? 'ক্রয়মূল্য' : 'Cost Rate'}</span>
-        <span class="mini-stat-value font-mono">৳${prod.buy_price}</span>
-        <span style="font-size:0.625rem; color:var(--color-text-subtle)">/${prod.unit}</span>
-      </div>
-      <div class="mini-stat">
-        <span class="mini-stat-label">${isBn ? 'নির্ধারিত বিক্রয়মূল্য' : 'Sell Rate'}</span>
-        <span class="mini-stat-value font-mono" style="color:var(--color-primary)">৳${prod.sell_price}</span>
-        <span style="font-size:0.625rem; color:var(--color-text-subtle)">/${prod.unit}</span>
-      </div>
-      <div class="mini-stat">
-        <span class="mini-stat-label">${isBn ? 'বর্তমান স্টক' : 'Stock'}</span>
-        <span class="mini-stat-value font-mono" style="color:${prod.stock <= (prod.minStockAlert || 15) ? 'var(--color-danger)' : 'var(--color-text-main)'}">
-          ${prod.stock} ${prod.unit}
-        </span>
-      </div>
-    </div>
-  `;
 
   updatePosCalculations();
 };
