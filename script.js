@@ -444,18 +444,18 @@ window.updatePosPreview = function() {
 
   const prodId = parseInt(select.value, 10);
   const prod = state.products.find(p => p.id === prodId);
-  const isBn = state.lang === 'bn';
-
   if (!prod) {
-    preview.innerHTML = `<span style="font-size:0.75rem; color:var(--color-text-subtle)">${isBn ? 'কোনো পণ্য সিলেক্ট করা নেই' : 'No product selected'}</span>`;
+    preview.innerHTML = '';
     return;
   }
 
-  preview.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.8125rem;">
-      <strong style="color:var(--color-text-main)">${prod.name}</strong>
-      <span style="color:var(--color-text-subtle); font-size:0.75rem">${prod.category}</span>
+  const isBn = state.lang === 'bn';
+  preview.innerHTML = 
+    <div style="padding:10px; background:#f4f4f4; border-radius:5px;">
+      <strong>${prod.name}</strong> (${isBn ? 'স্টক' : 'Stock'}: ${prod.stock} ${prod.unit}) - ${isBn ? 'দর' : 'Rate'}: ${prod.sell_price} টাকা
     </div>
+  ;
+};
     <div class="product-preview-stats">
       <div class="mini-stat">
         <span class="mini-stat-label">${isBn ? 'ক্রয়মূল্য' : 'Cost Rate'}</span>
