@@ -611,18 +611,13 @@ function handlePosSubmit(e) {
   };
 
   // 1. Deduct stock
-  prod.stock = Math.max(0, prod.stock - qty);
-  saveProducts();
+state.sales.unshift(saleRecord);
+console.log("Saving sale data:", saleRecord);
+saveSales();
 
-  // 2. Add to sales
-  state.sales.unshift(saleRecord);
-  saveSales();
+showCashMemoModal(saleRecord);
 
-  // 3. Show Cash Memo
-  showInvoiceModal(saleRecord.id);
-
-  // 4. Re-render
-  render();
+render();
 }
 
 // ----------------- 2. PRODUCT MANAGEMENT -----------------
