@@ -457,7 +457,6 @@ window.updatePosPreview = function() {
 };
 
   updatePosCalculations();
-
 window.updatePosCalculations = function() {
   const calcBox = document.getElementById('pos-calculations-box');
   const select = document.getElementById('pos-product-select');
