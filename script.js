@@ -546,80 +546,64 @@ window.updatePosCalculations = function() {
 
 function handlePosSubmit(e) {
   e.preventDefault();
-  const isBn = state.lang === 'bn';
-  const customerName = document.getElementById('pos-customer-name').value.trim();
-  const customerPhone = document.getElementById('pos-customer-phone').value.trim();
+  const isBm = state.lang === 'bn';
+  const customerName = document.getElementById('pos-customer-name')?.value;
+  const customerPhone = document.getElementById('pos-customer-phone')?.value;
+  const customerEmail = document.getElementById('pos-customer-email')?.value;
+  const styleInput = document.getElementById('pos-style')?.value;
+  const paymentMethod = document.getElementById('pos-payment-method')?.value;
+  const discountInput = document.getElementById('pos-discount')?.value;
+  const paidInput = document.getElementById('pos-paid')?.value;
+  const noteInput = document.getElementById('pos-note')?.value;
+
+  if (!customerName || !customerName.trim()) {
+    alert(isBm ? 'দয়া করে কাস্টমার নাম লিখুন।' : 'Please enter customer name.');
+    return;
+  }
+
   const select = document.getElementById('pos-product-select');
-  const qtyInput = document.getElementById('pos-qty');
-  const customRateInput = document.getElementById('pos-custom-rate');
-  const paymentMethod = document.getElementById('pos-payment-method').value;
-  const discountInput = document.getElementById('pos-discount');
-  const paidInput = document.getElementById('pos-paid');
-  const noteInput = document.getElementById('pos-note');
-
-  if (!customerName) {
-    alert(isBn ? 'দয়া করে কাস্টমারের নাম লিখুন!' : 'Please enter customer name!');
-    return;
-  }
-
-  const prodId = parseInt(select.value, 10);
+  const prodId = select ? parseInt(select.value, 10) : 0;
   const prod = state.products.find(p => p.id === prodId);
-  if (!prod) return;
-
-  const qty = parseFloat(qtyInput.value) || 1;
-  if (qty > prod.stock) {
-    alert(isBn ? `অপর্যাপ্ত স্টক! স্টকে আছে মাত্র ${prod.stock} ${prod.unit}` : `Insufficient stock! Only ${prod.stock} available`);
+  if (!prod) {
+    alert(isBm ? 'প্রোডাক্ট নির্বাচন করুন।' : 'Please select a product.');
     return;
   }
 
-  const customRate = customRateInput.value !== '' ? parseFloat(customRateInput.value) : prod.sell_price;
-  const discount = parseFloat(discountInput.value) || 0;
-  const totalAmount = qty * customRate;
-  const totalCost = qty * prod.buy_price;
-  const netPayable = Math.max(0, totalAmount - discount);
-  const paid = paidInput.value !== '' ? parseFloat(paidInput.value) : netPayable;
-  const due = Math.max(0, netPayable - paid);
-  const profit = netPayable - totalCost;
+  const qtyInput = document.getElementById('pos-qty');
+  const qty = qtyInput ? parseFloat(qtyInput.value) || 1 : 1;
+  const prodStock = parseFloat(prod.stock || 0);
+
+  if (qty > prodStock) {
+    alert(isBm ? 'পর্যাপ্ত স্টক নেই।' : 'Insufficient stock.');
+    return;
+  }
 
   const saleRecord = {
-    id: 'sale_' + Date.now(),
-    memoNo: generateMemoNo(),
-    customerName,
-    customerPhone: customerPhone || undefined,
-    items: [{
-      productId: prod.id,
-      productName: prod.name,
-      category: prod.category,
-      quantity: qty,
-      unit: prod.unit,
-      buyPrice: prod.buy_price,
-      sellPrice: customRate,
-      totalCost,
-      totalAmount,
-      profit
-    }],
-    totalAmount,
-    totalCost,
-    profit,
-    discount,
-    netPayable,
-    paidAmount: paid,
-    dueAmount: due,
-    paymentMethod,
-    date: new Date().toISOString().slice(0, 16).replace('T', ' '),
-    note: noteInput.value.trim() || undefined
+    id: Date.now(),
+    customerName: customerName.trim(),
+    customerPhone: customerPhone ? customerPhone.trim() : '',
+    customerEmail: customerEmail ? customerEmail.trim() : '',
+    style: styleInput ? styleInput.trim() : '',
+    paymentMethod: paymentMethod,
+    discount: parseFloat(discountInput) || 0,
+    paidAmount: parseFloat(paidInput) || 0,
+    date: new Date().toISOString().slice(0, 10),
+    note: noteInput ? noteInput.trim() : ''
   };
 
-  // 1. Deduct stock
-state.sales.unshift(saleRecord);
-console.log("Saving sale data:", saleRecord);
-saveSales();
+  prod.stock = Math.max(0, prod.stock - qty);
+  saveProducts();
 
-showCashMemoModal(saleRecord);
+  state.sales.unshift(saleRecord);
+  console.log("Saving sale data:", saleRecord);
+  saveSales();
 
-render();
+  if (typeof showCashMemoModal === 'function') {
+    showCashMemoModal(saleRecord);
+  }
+
+  render();
 }
-
 // ----------------- 2. PRODUCT MANAGEMENT -----------------
 function renderProducts(container) {
   const isBn = state.lang === 'bn';
