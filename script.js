@@ -228,7 +228,10 @@ function applyTheme(theme, persist) {
     root.style.colorScheme = 'light';
   }
   if (persist !== false) {
-    try { localStorage.setItem(STORAGE_KEYS.THEME, state.theme); } catch (e) {}
+    try {
+      localStorage.setItem(STORAGE_KEYS.THEME, state.theme);
+      localStorage.setItem('theme', state.theme);
+    } catch (e) {}
   }
   const btn = document.getElementById('theme-toggle-btn');
   if (btn) {
@@ -1756,9 +1759,29 @@ function ensureStandaloneEnhancements() {
       .customer-name-text { font-size: 1.05rem; font-weight: 800; line-height: 1.3; }
       .customer-edit-badge { position: absolute; top: 6px; left: 6px; width: 26px; height: 26px; border-radius: 9999px; background: var(--color-surface, #fff); border: 1px solid var(--color-border, #e2e8f0); display: flex; align-items: center; justify-content: center; font-size: 0.78rem; cursor: pointer; }
       .customer-check-badge { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 9999px; background: var(--color-primary, #059669); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 800; }
+      .top-header { background: radial-gradient(ellipse 60% 120% at 15% 50%, rgba(217,119,6,0.16), transparent 65%), linear-gradient(180deg, #09090b 0%, #141418 55%, #0c0a09 100%) !important; border-bottom: 1px solid rgba(245,158,11,0.35) !important; box-shadow: 0 8px 28px -6px rgba(0,0,0,0.55); }
+      .brand-zone span, .cinematic-jackal-title { font-family: 'Cinzel', Georgia, serif !important; font-size: 1.75rem !important; font-weight: 900 !important; letter-spacing: 0.08em; font-variant-caps: small-caps; line-height: 1.05; background-image: repeating-linear-gradient(125deg, rgba(255,255,255,0.22) 0px, rgba(255,255,255,0.22) 1px, rgba(69,26,3,0.14) 1px, rgba(69,26,3,0.14) 3px), linear-gradient(180deg, #fffbeb 0%, #fde047 18%, #eab308 42%, #a16207 52%, #facc15 74%, #fef08a 88%, #b45309 100%) !important; -webkit-background-clip: text !important; background-clip: text !important; color: transparent !important; -webkit-text-fill-color: transparent !important; filter: drop-shadow(0 1px 0 rgba(69,26,3,0.95)) drop-shadow(0 4px 10px rgba(0,0,0,0.78)); }
+      .top-header .nav-item { color: #cbd5e1; }
+      .top-header .nav-item.active { color: #fcd34d; border-bottom-color: #f59e0b; }
+      .top-header .btn-outline { background-color: rgba(24,24,27,0.92); color: #fef3c7; border-color: rgba(245,158,11,0.32); }
       .product-card-title { font-size: 1.25rem !important; font-weight: 800 !important; line-height: 1.3 !important; }
     `;
     document.head.appendChild(styleEl);
+  }
+
+  if (!document.getElementById('cinzel-poster-font')) {
+    const linkEl = document.createElement('link');
+    linkEl.id = 'cinzel-poster-font';
+    linkEl.rel = 'stylesheet';
+    linkEl.href = 'https://fonts.googleapis.com/css2?family=Cinzel:wght@700;800;900&display=swap';
+    document.head.appendChild(linkEl);
+  }
+
+  document.title = 'My Business - POS ও ইনভেন্টরি ম্যানেজমেন্ট';
+  const brandTitleSpan = document.querySelector('.brand-zone span');
+  if (brandTitleSpan) {
+    brandTitleSpan.textContent = 'My Business';
+    brandTitleSpan.classList.add('cinematic-jackal-title');
   }
 
   const navLinks = document.querySelector('.nav-links');
@@ -1813,16 +1836,18 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  window.toggleTheme = () => {
+    const nextTheme = state.theme === 'dark' ? 'light' : 'dark';
+    applyTheme(nextTheme, true);
+  };
+
   const themeBtn = document.getElementById('theme-toggle-btn');
   if (themeBtn) {
-    themeBtn.addEventListener('click', () => {
-      const nextTheme = state.theme === 'dark' ? 'light' : 'dark';
-      applyTheme(nextTheme, true);
-    });
+    themeBtn.addEventListener('click', window.toggleTheme);
   }
 
   window.addEventListener('storage', (ev) => {
-    if (ev.key === STORAGE_KEYS.THEME) {
+    if (ev.key === STORAGE_KEYS.THEME || ev.key === 'theme') {
       applyTheme(ev.newValue === 'dark' ? 'dark' : 'light', false);
     }
   });
