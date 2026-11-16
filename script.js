@@ -1,14 +1,28 @@
-var SUPABASE_URL = 'https://mbjgvsivtkavpvtqwhsb.supabase.co';
-var SUPABASE_ANON_KEY = 'sb_publishable_satWtSpdLxBaJ2FgXY3GJg_co5w-3ZD';
-var supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 /**
  * Agricultural Packaging Inventory & POS (কৃষি প্যাকেজিং হিসাব)
  * Clean, Standalone Vanilla JavaScript for GitHub Pages & Vercel
- * Zero dependencies, works directly in any modern browser!
+ * Integrated with Supabase PostgreSQL + automatic localStorage offline fallback
  */
 
+var SUPABASE_URL = 'https://mbjgvsivtkavpvtqwhsb.supabase.co';
+var SUPABASE_ANON_KEY = 'sb_publishable_satWtSpdLxBaJ2FgXY3GJg_co5w-3ZD';
 
-// Initial 29 Products from Streamlit application
+var supabaseClient = null;
+try {
+  if (typeof window !== 'undefined' && window.supabase && typeof window.supabase.createClient === 'function') {
+    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+} catch (err) {
+  console.warn('Supabase SDK could not initialize, falling back to localStorage:', err);
+}
+
+var STORAGE_KEYS = {
+  PRODUCTS: 'standalone_agri_products',
+  SALES: 'standalone_agri_sales',
+  LANG: 'standalone_agri_lang',
+};
+
+// Initial 29 Products
 var INITIAL_PRODUCTS = [
   // Crate & Paper & General Items
   { id: 1, name: "ক্যারেট - ১নং", category: "ক্যারেট", buy_price: 260, sell_price: 300, unit: "পিস", stock: 50, minStockAlert: 15 },
@@ -43,7 +57,7 @@ var INITIAL_PRODUCTS = [
   { id: 29, name: "নেট - ৩২/৫৬ (🟢 উপলব্ধ)", category: "বস্তা (নেট)", buy_price: 34, sell_price: 40, unit: "পিস", stock: 150, minStockAlert: 25 },
 ];
 
-const CATEGORIES = [
+var CATEGORIES = [
   'সব',
   'ক্যারেট',
   'কাগজ',
@@ -55,7 +69,7 @@ const CATEGORIES = [
 ];
 
 // App State
-let state = {
+var state = {
   products: [],
   sales: [],
   currentTab: 'dashboard',
@@ -67,82 +81,295 @@ let state = {
   salesSearchTerm: '',
   salesDueFilter: 'all',
   editingProductId: null,
+  isLoading: true,
+  syncMode: 'connecting', // 'supabase' | 'local' | 'connecting'
+  syncMessage: '',
 };
 
-// LocalStorage helpers
+// ----------------- NORMALIZATION & CACHE HELPERS -----------------
+function normalizeProduct(raw) {
+  return {
+    id: Number(raw.id),
+    name: String(raw.name || ''),
+    category: String(raw.category || 'অন্যান্য'),
+    buy_price: Number(raw.buy_price ?? raw.buyPrice ?? 0),
+    sell_price: Number(raw.sell_price ?? raw.sellPrice ?? 0),
+    unit: String(raw.unit || 'পিস'),
+    stock: Number(raw.stock ?? 0),
+    minStockAlert: Number(raw.minStockAlert ?? raw.min_stock_alert ?? 15),
+  };
+}
+
+function normalizeSale(raw) {
+  var parsedItems = [];
+  if (Array.isArray(raw.items)) {
+    parsedItems = raw.items;
+  } else if (typeof raw.items === 'string') {
+    try {
+      var tmp = JSON.parse(raw.items);
+      if (Array.isArray(tmp)) parsedItems = tmp;
+    } catch (e) {
+      parsedItems = [];
+    }
+  }
+
+  var totalAmount = Number(raw.totalAmount ?? raw.total_amount ?? 0);
+  var discount = Number(raw.discount ?? 0);
+  var netPayable = Number(raw.netPayable ?? raw.net_payable ?? Math.max(0, totalAmount - discount));
+  var paidAmount = Number(raw.paidAmount ?? raw.paid_amount ?? netPayable);
+  var dueAmount = Number(raw.dueAmount ?? raw.due_amount ?? Math.max(0, netPayable - paidAmount));
+  var totalCost = Number(raw.totalCost ?? raw.total_cost ?? 0);
+  var profit = Number(raw.profit ?? (netPayable - totalCost));
+
+  return {
+    id: String(raw.id),
+    memoNo: String(raw.memoNo ?? raw.memo_no ?? ('MEMO-' + String(raw.id).slice(-4))),
+    customerName: String(raw.customerName ?? raw.customer_name ?? 'অজানা কাস্টমার'),
+    customerPhone: raw.customerPhone ?? raw.customer_phone ?? '',
+    items: parsedItems,
+    totalAmount: totalAmount,
+    totalCost: totalCost,
+    profit: profit,
+    discount: discount,
+    netPayable: netPayable,
+    paidAmount: paidAmount,
+    dueAmount: dueAmount,
+    paymentMethod: String(raw.paymentMethod ?? raw.payment_method ?? 'ক্যাশ (Cash)'),
+    date: String(raw.date || new Date().toISOString().slice(0, 16).replace('T', ' ')),
+    note: raw.note || '',
+  };
+}
+
+function loadLocalProducts() {
+  try {
+    var saved = localStorage.getItem(STORAGE_KEYS.PRODUCTS);
+    if (saved) {
+      var parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map(normalizeProduct);
+      }
+    }
+  } catch (e) {}
+  return JSON.parse(JSON.stringify(INITIAL_PRODUCTS));
+}
+
+function loadLocalSales() {
+  try {
+    var saved = localStorage.getItem(STORAGE_KEYS.SALES);
+    if (saved) {
+      var parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        return parsed.map(normalizeSale);
+      }
+    }
+  } catch (e) {}
+  return [];
+}
+
+function saveLocalProducts() {
+  try {
+    localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(state.products));
+  } catch (e) {}
+}
+
+function saveLocalSales() {
+  try {
+    localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(state.sales));
+  } catch (e) {}
+}
+
+// ----------------- SUPABASE + LOCAL STORAGE SYNC -----------------
 async function loadState() {
-    try {
-        // সুপারবেজ থেকে প্রোডাক্টস ও সেলস ডাটা ফেচ করা
-        const { data: productsData, error: prodError } = await supabaseClient.from('products').select('*');
-        const { data: salesData, error: salesError } = await supabaseClient.from('sales').select('*');
+  state.isLoading = true;
+  render();
 
-        if (prodError) console.error('Error loading products:', prodError);
-        if (salesError) console.error('Error loading sales:', salesError);
+  try {
+    var savedLang = localStorage.getItem(STORAGE_KEYS.LANG);
+    if (savedLang === 'bn' || savedLang === 'en') state.lang = savedLang;
+  } catch (e) {}
 
-        state.products = productsData && productsData.length > 0 ? productsData : INITIAL_PRODUCTS;
-        state.sales = salesData || [];
-    } catch (error) {
-        console.error('Failed to load from Supabase:', error);
-        state.products = INITIAL_PRODUCTS;
-        state.sales = [];
-    }
+  var fallbackProducts = loadLocalProducts();
+  var fallbackSales = loadLocalSales();
+
+  if (!supabaseClient) {
+    state.products = fallbackProducts;
+    state.sales = fallbackSales;
+    state.syncMode = 'local';
+    state.syncMessage = 'Supabase SDK লোড হয়নি, লোকাল স্টোরেজে চলছে';
+    state.isLoading = false;
     render();
-}
+    return;
+  }
 
-async function saveProducts() {
-    try {
-        const { error } = await supabaseClient
-            .from('products')
-            .upsert(state.products);
-        
-        if (error) console.error('Error saving products:', error);
-    } catch (error) {
-        console.error('Failed to save products to Supabase:', error);
-    }
-}
+  try {
+    var prodRes = await supabaseClient
+      .from('products')
+      .select('*')
+      .order('id', { ascending: true });
 
-async function saveSales() {
-    try {
-        // নতুন সেল এন্ট্রি সুপারবেজে পাঠানো
-        const latestSale = state.sales[state.sales.length - 1];
-        if (latestSale) {
-            const { error } = await supabaseClient
-                .from('sales')
-                .insert([latestSale]);
-            
-            if (error) console.error('Error saving sale:', error);
+    var salesRes = await supabaseClient
+      .from('sales')
+      .select('*')
+      .order('date', { ascending: false });
+
+    if (prodRes.error || salesRes.error) {
+      var errMsg = (prodRes.error && prodRes.error.message) || (salesRes.error && salesRes.error.message) || 'Unknown error';
+      console.warn('Supabase query error, using localStorage fallback:', errMsg);
+      state.products = fallbackProducts;
+      state.sales = fallbackSales;
+      state.syncMode = 'local';
+      state.syncMessage = errMsg;
+    } else {
+      if (prodRes.data && prodRes.data.length > 0) {
+        state.products = prodRes.data.map(normalizeProduct);
+      } else {
+        // Seed initial 29 products to Supabase if table is empty
+        state.products = JSON.parse(JSON.stringify(INITIAL_PRODUCTS));
+        var seedRes = await supabaseClient.from('products').upsert(state.products);
+        if (seedRes.error) {
+          console.warn('Could not auto-seed products to Supabase:', seedRes.error.message);
         }
-    } catch (error) {
-        console.error('Failed to save sale to Supabase:', error);
+      }
+
+      state.sales = (salesRes.data || []).map(normalizeSale);
+      state.syncMode = 'supabase';
+      state.syncMessage = '';
+
+      saveLocalProducts();
+      saveLocalSales();
     }
+  } catch (error) {
+    console.warn('Failed to connect to Supabase, using localStorage fallback:', error);
+    state.products = fallbackProducts;
+    state.sales = fallbackSales;
+    state.syncMode = 'local';
+    state.syncMessage = error && error.message ? error.message : 'Network error';
+  }
+
+  state.isLoading = false;
+  render();
 }
+
+async function saveProductToDb(product) {
+  saveLocalProducts();
+  if (!supabaseClient) return;
+  try {
+    var res = await supabaseClient.from('products').upsert([product]);
+    if (res.error) {
+      console.error('Error saving product to Supabase:', res.error.message);
+    } else {
+      state.syncMode = 'supabase';
+    }
+  } catch (err) {
+    console.error('Failed to save product to Supabase:', err);
+  }
+}
+
+async function saveAllProductsToDb() {
+  saveLocalProducts();
+  if (!supabaseClient) return;
+  try {
+    var res = await supabaseClient.from('products').upsert(state.products);
+    if (res.error) {
+      console.error('Error saving products to Supabase:', res.error.message);
+    }
+  } catch (err) {
+    console.error('Failed to save products to Supabase:', err);
+  }
+}
+
+async function deleteProductFromDb(prodId) {
+  saveLocalProducts();
+  if (!supabaseClient) return;
+  try {
+    var res = await supabaseClient.from('products').delete().eq('id', prodId);
+    if (res.error) {
+      console.error('Error deleting product from Supabase:', res.error.message);
+    }
+  } catch (err) {
+    console.error('Failed to delete product from Supabase:', err);
+  }
+}
+
+async function insertSaleToDb(saleRecord) {
+  saveLocalSales();
+  if (!supabaseClient) return;
+  try {
+    var res = await supabaseClient.from('sales').insert([saleRecord]);
+    if (res.error) {
+      console.error('Error saving sale to Supabase:', res.error.message);
+    } else {
+      state.syncMode = 'supabase';
+    }
+  } catch (err) {
+    console.error('Failed to save sale to Supabase:', err);
+  }
+}
+
+async function deleteSaleFromDb(saleId) {
+  saveLocalSales();
+  if (!supabaseClient) return;
+  try {
+    var res = await supabaseClient.from('sales').delete().eq('id', saleId);
+    if (res.error) {
+      console.error('Error deleting sale from Supabase:', res.error.message);
+    }
+  } catch (err) {
+    console.error('Failed to delete sale from Supabase:', err);
+  }
+}
+
 // Helpers
 function formatTaka(num) {
   return '৳ ' + (Math.round((num || 0) * 100) / 100).toLocaleString('en-US');
 }
 
 function generateMemoNo() {
-  const count = state.sales.length + 101;
+  var count = state.sales.length + 101;
   return 'MEMO-' + count.toString().padStart(4, '0');
+}
+
+function updateFooterSyncStatus() {
+  var footerEl = document.getElementById('db-sync-footer');
+  if (!footerEl) return;
+  var isBn = state.lang === 'bn';
+  var syncLabel = state.syncMode === 'supabase'
+    ? (isBn ? 'Supabase সংযুক্ত' : 'Supabase Synced')
+    : (isBn ? 'লোকাল ব্যাকআপ মোড' : 'Local Backup Mode');
+  footerEl.textContent = (isBn ? 'মুদ্রা: ৳ (টাকা)' : 'Currency: ৳ (BDT)') +
+    ' · ' + state.products.length + (isBn ? 'টি পণ্য' : ' products') +
+    ' · ' + syncLabel;
 }
 
 // Render Current Tab
 function render() {
-  // Update header active states
-  document.querySelectorAll('.nav-item').forEach(el => {
+  document.querySelectorAll('.nav-item').forEach(function(el) {
     el.classList.toggle('active', el.dataset.tab === state.currentTab);
   });
-  document.querySelectorAll('.mobile-nav-item').forEach(el => {
+  document.querySelectorAll('.mobile-nav-item').forEach(function(el) {
     el.classList.toggle('active', el.dataset.tab === state.currentTab);
   });
 
-  const langBtn = document.getElementById('lang-toggle-btn');
+  var langBtn = document.getElementById('lang-toggle-btn');
   if (langBtn) {
     langBtn.textContent = state.lang === 'bn' ? 'English' : 'বাংলা';
   }
 
-  const main = document.getElementById('app-main-content');
+  updateFooterSyncStatus();
+
+  var main = document.getElementById('app-main-content');
   if (!main) return;
+
+  if (state.isLoading) {
+    var isBn = state.lang === 'bn';
+    main.innerHTML = `
+      <div class="loading-state">
+        <div class="spinner"></div>
+        <div>${isBn ? 'ডাটাবেজ থেকে তথ্য লোড হচ্ছে...' : 'Loading inventory & sales from database...'}</div>
+      </div>
+    `;
+    return;
+  }
 
   if (state.currentTab === 'dashboard') {
     renderDashboard(main);
@@ -155,21 +382,43 @@ function render() {
   }
 }
 
+function renderSyncNoticeBanner() {
+  if (state.syncMode !== 'local' || !state.syncMessage) return '';
+  var isBn = state.lang === 'bn';
+  return `
+    <div class="sync-banner">
+      <div>
+        <strong>${isBn ? 'লোকাল ব্যাকআপ মোডে চলছে:' : 'Running in Local Backup Mode:'}</strong>
+        <span>${isBn ? 'Supabase টেবিল পাওয়া যায়নি বা সংযোগ বিচ্ছিন্ন রয়েছে।' : 'Supabase table missing or unreachable.'} (${state.syncMessage})</span>
+      </div>
+      <button type="button" class="btn btn-outline btn-sm" onclick="loadState()">
+        🔄 ${isBn ? 'আবার চেষ্টা করুন' : 'Retry Sync'}
+      </button>
+    </div>
+  `;
+}
+
 // ----------------- 1. DASHBOARD & POS -----------------
 function renderDashboard(container) {
-  const isBn = state.lang === 'bn';
-  const availableProducts = state.products.filter(p => p.stock > 0 && p.sell_price > 0);
-  
+  var isBn = state.lang === 'bn';
+  var availableProducts = state.products.filter(function(p) { return p.stock > 0 && p.sell_price > 0; });
+
   // KPI Calculations
-  const totalTypes = state.products.length;
-  const totalStockUnits = state.products.reduce((acc, p) => acc + p.stock, 0);
-  const totalSalesCount = state.sales.length;
-  const totalRevenue = state.sales.reduce((acc, s) => acc + s.netPayable, 0);
-  const totalProfit = state.sales.reduce((acc, s) => acc + s.profit, 0);
-  const totalDue = state.sales.reduce((acc, s) => acc + s.dueAmount, 0);
-  const lowStockCount = state.products.filter(p => p.stock <= (p.minStockAlert || 15)).length;
+  var totalTypes = state.products.length;
+  var totalStockUnits = state.products.reduce(function(acc, p) { return acc + p.stock; }, 0);
+  var totalSalesCount = state.sales.length;
+  var totalRevenue = state.sales.reduce(function(acc, s) { return acc + s.netPayable; }, 0);
+  var totalProfit = state.sales.reduce(function(acc, s) { return acc + s.profit; }, 0);
+  var totalDue = state.sales.reduce(function(acc, s) { return acc + s.dueAmount; }, 0);
+  var lowStockCount = state.products.filter(function(p) { return p.stock <= (p.minStockAlert || 15); }).length;
+
+  var filteredPosProducts = availableProducts.filter(function(p) {
+    return state.posCategoryFilter === 'সব' || p.category === state.posCategoryFilter;
+  });
 
   container.innerHTML = `
+    ${renderSyncNoticeBanner()}
+
     <!-- KPI Grid -->
     <div class="kpi-grid">
       <div class="kpi-card">
@@ -214,7 +463,7 @@ function renderDashboard(container) {
           <span>💰</span>
         </div>
         <div class="kpi-value tabular-nums" style="color:#4f46e5">${formatTaka(totalProfit)}</div>
-        <div class="kpi-subtext">${totalRevenue > 0 ? ((totalProfit/totalRevenue)*100).toFixed(1) + '% ' + (isBn ? 'মার্জিন' : 'margin') : '0%'}</div>
+        <div class="kpi-subtext">${totalRevenue > 0 ? ((totalProfit / totalRevenue) * 100).toFixed(1) + '% ' + (isBn ? 'মার্জিন' : 'margin') : '0%'}</div>
       </div>
 
       <div class="kpi-card">
@@ -223,7 +472,7 @@ function renderDashboard(container) {
           <span>⚠️</span>
         </div>
         <div class="kpi-value tabular-nums" style="color:${totalDue > 0 ? 'var(--color-warning)' : 'inherit'}">${formatTaka(totalDue)}</div>
-        <div class="kpi-subtext">${lowStockCount > 0 ? `${lowStockCount} ${isBn ? 'আইটেমে কম স্টক' : 'items low'}` : (isBn ? 'স্টক সন্তোষজনক' : 'Healthy')}</div>
+        <div class="kpi-subtext">${lowStockCount > 0 ? lowStockCount + ' ' + (isBn ? 'আইটেমে কম স্টক' : 'items low') : (isBn ? 'স্টক সন্তোষজনক' : 'Healthy')}</div>
       </div>
     </div>
 
@@ -255,9 +504,9 @@ function renderDashboard(container) {
             <div class="form-group">
               <label class="form-label">${isBn ? 'ক্যাটাগরি বাছাই করে দ্রুত খুঁজুন' : 'Filter by Category'}</label>
               <div class="chip-group">
-                ${CATEGORIES.map(c => `
-                  <button type="button" class="chip ${state.posCategoryFilter === c ? 'active' : ''}" onclick="setPosCategory('${c}')">${c}</button>
-                `).join('')}
+                ${CATEGORIES.map(function(c) {
+                  return '<button type="button" class="chip ' + (state.posCategoryFilter === c ? 'active' : '') + '" onclick="setPosCategory(\'' + c + '\')">' + c + '</button>';
+                }).join('')}
               </div>
             </div>
 
@@ -265,13 +514,11 @@ function renderDashboard(container) {
             <div class="form-group">
               <label class="form-label">${isBn ? 'পণ্য নির্বাচন করুন' : 'Select Product'} *</label>
               <select id="pos-product-select" class="form-control" onchange="updatePosPreview()">
-                ${availableProducts
-                  .filter(p => state.posCategoryFilter === 'সব' || p.category === state.posCategoryFilter)
-                  .map(p => `
-                    <option value="${p.id}">
-                      ${p.name} — ${p.category} [স্টক: ${p.stock} ${p.unit} | দর: ৳${p.sell_price}]
-                    </option>
-                  `).join('')}
+                ${filteredPosProducts.length === 0
+                  ? '<option value="">' + (isBn ? 'এই ক্যাটাগরিতে স্টক নেই' : 'No available stock in category') + '</option>'
+                  : filteredPosProducts.map(function(p) {
+                      return '<option value="' + p.id + '">' + p.name + ' — ' + p.category + ' [স্টক: ' + p.stock + ' ' + p.unit + ' | দর: ৳' + p.sell_price + ']</option>';
+                    }).join('')}
               </select>
             </div>
 
@@ -336,9 +583,7 @@ function renderDashboard(container) {
           <div class="panel-header">
             <span class="panel-title">${isBn ? 'চলতি বিক্রয় হিসাব ও লাভ' : 'Live Calculation'}</span>
           </div>
-          <div class="panel-body" id="pos-calculations-box">
-            <!-- Dynamic calculation content -->
-          </div>
+          <div class="panel-body" id="pos-calculations-box"></div>
         </div>
 
         <div class="panel">
@@ -346,22 +591,24 @@ function renderDashboard(container) {
             <span class="panel-title">${isBn ? 'জনপ্রিয় আইটেম স্টক' : 'Popular Items Stock'}</span>
           </div>
           <div class="panel-body" style="padding:10px 16px;">
-            ${state.products.slice(0, 6).map(p => `
-              <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--color-border-subtle); font-size:0.75rem;">
-                <div>
-                  <div style="font-weight:600">${p.name}</div>
-                  <div style="color:var(--color-text-subtle); font-size:0.6875rem">৳${p.sell_price} / ${p.unit}</div>
-                </div>
-                <div class="text-right">
-                  <div class="font-mono" style="font-weight:700; color:${p.stock === 0 ? 'var(--color-danger)' : (p.stock < 20 ? 'var(--color-warning)' : 'var(--color-primary)')}">
-                    ${p.stock} ${p.unit}
+            ${state.products.slice(0, 6).map(function(p) {
+              return `
+                <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--color-border-subtle); font-size:0.75rem;">
+                  <div>
+                    <div style="font-weight:600">${p.name}</div>
+                    <div style="color:var(--color-text-subtle); font-size:0.6875rem">৳${p.sell_price} / ${p.unit}</div>
                   </div>
-                  <div style="font-size:0.625rem; color:var(--color-text-subtle)">
-                    ${p.stock === 0 ? (isBn ? 'স্টক নেই' : 'Out of stock') : (isBn ? 'মজুদ আছে' : 'Available')}
+                  <div class="text-right">
+                    <div class="font-mono" style="font-weight:700; color:${p.stock === 0 ? 'var(--color-danger)' : (p.stock < 20 ? 'var(--color-warning)' : 'var(--color-primary)')}">
+                      ${p.stock} ${p.unit}
+                    </div>
+                    <div style="font-size:0.625rem; color:var(--color-text-subtle)">
+                      ${p.stock === 0 ? (isBn ? 'স্টক নেই' : 'Out of stock') : (isBn ? 'মজুদ আছে' : 'Available')}
+                    </div>
                   </div>
                 </div>
-              </div>
-            `).join('')}
+              `;
+            }).join('')}
           </div>
         </div>
       </div>
@@ -372,7 +619,7 @@ function renderDashboard(container) {
       <div class="panel" style="margin-top:24px;">
         <div class="panel-header">
           <span class="panel-title">${isBn ? 'সর্বশেষ বিক্রয়সমূহ' : 'Recent Sales Records'}</span>
-          <span style="font-size:0.75rem; color:var(--color-text-subtle)">${isBn ? `মোট ${state.sales.length} টির মধ্যে শেষ ৫টি` : `Showing last 5 of ${state.sales.length}`}</span>
+          <span style="font-size:0.75rem; color:var(--color-text-subtle)">${isBn ? 'মোট ' + state.sales.length + ' টির মধ্যে শেষ ৫টি' : 'Showing last 5 of ' + state.sales.length}</span>
         </div>
         <div class="table-responsive">
           <table class="data-table">
@@ -389,25 +636,30 @@ function renderDashboard(container) {
               </tr>
             </thead>
             <tbody>
-              ${state.sales.slice(0, 5).map(sale => `
-                <tr>
-                  <td class="font-mono" style="font-weight:700">${sale.memoNo}</td>
-                  <td style="color:var(--color-text-subtle)">${sale.date}</td>
-                  <td style="font-weight:600">${sale.customerName}</td>
-                  <td>${sale.items.map(it => `${it.productName} (${it.quantity} ${it.unit})`).join(', ')}</td>
-                  <td class="text-right font-mono" style="font-weight:700">${formatTaka(sale.netPayable)}</td>
-                  <td class="text-right font-mono" style="font-weight:700; color:var(--color-primary)">${formatTaka(sale.profit)}</td>
-                  <td class="text-center">
-                    <div>${sale.paymentMethod}</div>
-                    ${sale.dueAmount > 0 ? `<div style="color:var(--color-danger); font-size:0.6875rem; font-weight:600">বাকি: ৳${sale.dueAmount}</div>` : ''}
-                  </td>
-                  <td class="text-center">
-                    <button class="btn btn-outline btn-sm" onclick="showInvoiceModal('${sale.id}')">
-                      👁️ ${isBn ? 'মেমো' : 'Memo'}
-                    </button>
-                  </td>
-                </tr>
-              `).join('')}
+              ${state.sales.slice(0, 5).map(function(sale) {
+                var itemsText = (sale.items || []).map(function(it) {
+                  return it.productName + ' (' + it.quantity + ' ' + it.unit + ')';
+                }).join(', ');
+                return `
+                  <tr>
+                    <td class="font-mono" style="font-weight:700">${sale.memoNo}</td>
+                    <td style="color:var(--color-text-subtle)">${sale.date}</td>
+                    <td style="font-weight:600">${sale.customerName}</td>
+                    <td>${itemsText || '-'}</td>
+                    <td class="text-right font-mono" style="font-weight:700">${formatTaka(sale.netPayable)}</td>
+                    <td class="text-right font-mono" style="font-weight:700; color:var(--color-primary)">${formatTaka(sale.profit)}</td>
+                    <td class="text-center">
+                      <div>${sale.paymentMethod}</div>
+                      ${sale.dueAmount > 0 ? '<div style="color:var(--color-danger); font-size:0.6875rem; font-weight:600">বাকি: ৳' + sale.dueAmount + '</div>' : ''}
+                    </td>
+                    <td class="text-center">
+                      <button class="btn btn-outline btn-sm" onclick="showInvoiceModal('${sale.id}')">
+                        👁️ ${isBn ? 'মেমো' : 'Memo'}
+                      </button>
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
             </tbody>
           </table>
         </div>
@@ -415,8 +667,7 @@ function renderDashboard(container) {
     ` : ''}
   `;
 
-  // Attach POS form listeners
-  const form = document.getElementById('pos-sale-form');
+  var form = document.getElementById('pos-sale-form');
   if (form) {
     form.onsubmit = handlePosSubmit;
   }
@@ -429,58 +680,85 @@ window.setPosCategory = function(cat) {
 };
 
 window.adjustPosQty = function(delta) {
-  const input = document.getElementById('pos-qty');
+  var input = document.getElementById('pos-qty');
   if (input) {
-    const val = Math.max(1, (parseFloat(input.value) || 1) + delta);
+    var val = Math.max(1, (parseFloat(input.value) || 1) + delta);
     input.value = val;
     updatePosCalculations();
   }
 };
 
 window.updatePosPreview = function() {
-  const select = document.getElementById('pos-product-select');
-  const preview = document.getElementById('pos-product-preview');
+  var select = document.getElementById('pos-product-select');
+  var preview = document.getElementById('pos-product-preview');
   if (!select || !preview) return;
 
-  const prodId = parseInt(select.value, 10);
-  const prod = state.products.find(p => p.id === prodId);
+  var prodId = parseInt(select.value, 10);
+  var prod = state.products.find(function(p) { return p.id === prodId; });
+  var isBn = state.lang === 'bn';
+
   if (!prod) {
-    preview.innerHTML = '';
+    preview.innerHTML = '<span style="font-size:0.75rem; color:var(--color-text-subtle)">' + (isBn ? 'কোনো পণ্য সিলেক্ট করা নেই' : 'No product selected') + '</span>';
+    updatePosCalculations();
     return;
   }
 
-  const isBn = state.lang === 'bn';
-  const stockLabel = isBn ? 'স্টক' : 'Stock';
-  const rateLabel = isBn ? 'দর' : 'Rate';
+  preview.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.8125rem;">
+      <strong style="color:var(--color-text-main)">${prod.name}</strong>
+      <span style="color:var(--color-text-subtle); font-size:0.75rem">${prod.category}</span>
+    </div>
+    <div class="product-preview-stats">
+      <div class="mini-stat">
+        <span class="mini-stat-label">${isBn ? 'ক্রয়মূল্য' : 'Cost Rate'}</span>
+        <span class="mini-stat-value font-mono">৳${prod.buy_price}</span>
+        <span style="font-size:0.625rem; color:var(--color-text-subtle)">/${prod.unit}</span>
+      </div>
+      <div class="mini-stat">
+        <span class="mini-stat-label">${isBn ? 'নির্ধারিত বিক্রয়মূল্য' : 'Sell Rate'}</span>
+        <span class="mini-stat-value font-mono" style="color:var(--color-primary)">৳${prod.sell_price}</span>
+        <span style="font-size:0.625rem; color:var(--color-text-subtle)">/${prod.unit}</span>
+      </div>
+      <div class="mini-stat">
+        <span class="mini-stat-label">${isBn ? 'বর্তমান স্টক' : 'Stock'}</span>
+        <span class="mini-stat-value font-mono" style="color:${prod.stock <= (prod.minStockAlert || 15) ? 'var(--color-danger)' : 'var(--color-text-main)'}">
+          ${prod.stock} ${prod.unit}
+        </span>
+      </div>
+    </div>
+  `;
 
-  preview.innerHTML = '<div style="padding:10px; background:#f4f4f4; border-radius:5px;"><strong>' + prod.name + '</strong> (' + stockLabel + ': ' + prod.stock + ' ' + prod.unit + ') - ' + rateLabel + ': ' + prod.sell_price + ' টাকা</div>';
+  updatePosCalculations();
 };
 
 window.updatePosCalculations = function() {
-  const calcBox = document.getElementById('pos-calculations-box');
-  const select = document.getElementById('pos-product-select');
-  const qtyInput = document.getElementById('pos-qty');
-  const customRateInput = document.getElementById('pos-custom-rate');
-  const discountInput = document.getElementById('pos-discount');
-  const paidInput = document.getElementById('pos-paid');
+  var calcBox = document.getElementById('pos-calculations-box');
+  var select = document.getElementById('pos-product-select');
+  var qtyInput = document.getElementById('pos-qty');
+  var customRateInput = document.getElementById('pos-custom-rate');
+  var discountInput = document.getElementById('pos-discount');
+  var paidInput = document.getElementById('pos-paid');
   if (!calcBox || !select) return;
 
-  const prodId = parseInt(select.value, 10);
-  const prod = state.products.find(p => p.id === prodId);
-  const isBn = state.lang === 'bn';
-  if (!prod) return;
+  var prodId = parseInt(select.value, 10);
+  var prod = state.products.find(function(p) { return p.id === prodId; });
+  var isBn = state.lang === 'bn';
+  if (!prod) {
+    calcBox.innerHTML = '<div style="font-size:0.75rem; color:var(--color-text-subtle)">' + (isBn ? 'হিসাব দেখতে একটি পণ্য নির্বাচন করুন' : 'Select a product to calculate') + '</div>';
+    return;
+  }
 
-  const qty = parseFloat(qtyInput ? qtyInput.value : 1) || 1;
-  const customRate = customRateInput && customRateInput.value !== '' ? parseFloat(customRateInput.value) : prod.sell_price;
-  const discount = parseFloat(discountInput ? discountInput.value : 0) || 0;
-  
-  const totalAmount = qty * customRate;
-  const totalCost = qty * prod.buy_price;
-  const netPayable = Math.max(0, totalAmount - discount);
-  const paid = paidInput && paidInput.value !== '' ? parseFloat(paidInput.value) : netPayable;
-  const due = Math.max(0, netPayable - paid);
-  const profit = netPayable - totalCost;
-  const marginPct = netPayable > 0 ? ((profit / netPayable) * 100).toFixed(1) : '0';
+  var qty = parseFloat(qtyInput ? qtyInput.value : 1) || 1;
+  var customRate = customRateInput && customRateInput.value !== '' ? parseFloat(customRateInput.value) : prod.sell_price;
+  var discount = parseFloat(discountInput ? discountInput.value : 0) || 0;
+
+  var totalAmount = qty * customRate;
+  var totalCost = qty * prod.buy_price;
+  var netPayable = Math.max(0, totalAmount - discount);
+  var paid = paidInput && paidInput.value !== '' ? parseFloat(paidInput.value) : netPayable;
+  var due = Math.max(0, netPayable - paid);
+  var profit = netPayable - totalCost;
+  var marginPct = netPayable > 0 ? ((profit / netPayable) * 100).toFixed(1) : '0';
 
   calcBox.innerHTML = `
     <div class="calc-row">
@@ -521,86 +799,114 @@ window.updatePosCalculations = function() {
   `;
 };
 
-function handlePosSubmit(e) {
+async function handlePosSubmit(e) {
   e.preventDefault();
-  const isBm = state.lang === 'bn';
-  const customerName = document.getElementById('pos-customer-name')?.value;
-  const customerPhone = document.getElementById('pos-customer-phone')?.value;
-  const customerEmail = document.getElementById('pos-customer-email')?.value;
-  const styleInput = document.getElementById('pos-style')?.value;
-  const paymentMethod = document.getElementById('pos-payment-method')?.value;
-  const discountInput = document.getElementById('pos-discount')?.value;
-  const paidInput = document.getElementById('pos-paid')?.value;
-  const noteInput = document.getElementById('pos-note')?.value;
+  var isBn = state.lang === 'bn';
+  var customerName = document.getElementById('pos-customer-name').value.trim();
+  var customerPhone = document.getElementById('pos-customer-phone').value.trim();
+  var select = document.getElementById('pos-product-select');
+  var qtyInput = document.getElementById('pos-qty');
+  var customRateInput = document.getElementById('pos-custom-rate');
+  var paymentMethod = document.getElementById('pos-payment-method').value;
+  var discountInput = document.getElementById('pos-discount');
+  var paidInput = document.getElementById('pos-paid');
+  var noteInput = document.getElementById('pos-note');
 
-  if (!customerName || !customerName.trim()) {
-    alert(isBm ? 'দয়া করে কাস্টমার নাম লিখুন।' : 'Please enter customer name.');
+  if (!customerName) {
+    alert(isBn ? 'দয়া করে কাস্টমারের নাম লিখুন!' : 'Please enter customer name!');
     return;
   }
 
-  const select = document.getElementById('pos-product-select');
-  const prodId = select ? parseInt(select.value, 10) : 0;
-  const prod = state.products.find(p => p.id === prodId);
+  var prodId = parseInt(select.value, 10);
+  var prod = state.products.find(function(p) { return p.id === prodId; });
   if (!prod) {
-    alert(isBm ? 'প্রোডাক্ট নির্বাচন করুন।' : 'Please select a product.');
+    alert(isBn ? 'দয়া করে পণ্য নির্বাচন করুন!' : 'Please select a product!');
     return;
   }
 
-  const qtyInput = document.getElementById('pos-qty');
-  const qty = qtyInput ? parseFloat(qtyInput.value) || 1 : 1;
-  const prodStock = parseFloat(prod.stock || 0);
-
-  if (qty > prodStock) {
-    alert(isBm ? 'পর্যাপ্ত স্টক নেই।' : 'Insufficient stock.');
+  var qty = parseFloat(qtyInput.value) || 1;
+  if (qty <= 0) {
+    alert(isBn ? 'পরিমাণ অবশ্যই ০ এর বেশি হতে হবে!' : 'Quantity must be greater than 0!');
+    return;
+  }
+  if (qty > prod.stock) {
+    alert(isBn ? 'অপর্যাপ্ত স্টক! স্টকে আছে মাত্র ' + prod.stock + ' ' + prod.unit : 'Insufficient stock! Only ' + prod.stock + ' available');
     return;
   }
 
-  const saleRecord = {
-    id: Date.now(),
-    customerName: customerName.trim(),
-    customerPhone: customerPhone ? customerPhone.trim() : '',
-    customerEmail: customerEmail ? customerEmail.trim() : '',
-    style: styleInput ? styleInput.trim() : '',
+  var customRate = customRateInput.value !== '' ? parseFloat(customRateInput.value) : prod.sell_price;
+  var discount = parseFloat(discountInput.value) || 0;
+  var totalAmount = qty * customRate;
+  var totalCost = qty * prod.buy_price;
+  var netPayable = Math.max(0, totalAmount - discount);
+  var paid = paidInput.value !== '' ? parseFloat(paidInput.value) : netPayable;
+  var due = Math.max(0, netPayable - paid);
+  var profit = netPayable - totalCost;
+
+  var saleRecord = {
+    id: 'sale_' + Date.now(),
+    memoNo: generateMemoNo(),
+    customerName: customerName,
+    customerPhone: customerPhone || '',
+    items: [{
+      productId: prod.id,
+      productName: prod.name,
+      category: prod.category,
+      quantity: qty,
+      unit: prod.unit,
+      buyPrice: prod.buy_price,
+      sellPrice: customRate,
+      totalCost: totalCost,
+      totalAmount: totalAmount,
+      profit: profit,
+    }],
+    totalAmount: totalAmount,
+    totalCost: totalCost,
+    profit: profit,
+    discount: discount,
+    netPayable: netPayable,
+    paidAmount: paid,
+    dueAmount: due,
     paymentMethod: paymentMethod,
-    discount: parseFloat(discountInput) || 0,
-    paidAmount: parseFloat(paidInput) || 0,
-    date: new Date().toISOString().slice(0, 10),
-    note: noteInput ? noteInput.trim() : ''
+    date: new Date().toISOString().slice(0, 16).replace('T', ' '),
+    note: noteInput.value.trim() || '',
   };
 
+  // 1. Deduct stock & sync product
   prod.stock = Math.max(0, prod.stock - qty);
-  saveProducts();
+  await saveProductToDb(prod);
 
+  // 2. Prepend sale & sync sale
   state.sales.unshift(saleRecord);
-  console.log("Saving sale data:", saleRecord);
-  saveSales();
+  await insertSaleToDb(saleRecord);
 
-  if (typeof showCashMemoModal === 'function') {
-    showCashMemoModal(saleRecord);
-  }
-
+  // 3. Re-render and open Cash Memo
   render();
+  showInvoiceModal(saleRecord.id);
 }
+
 // ----------------- 2. PRODUCT MANAGEMENT -----------------
 function renderProducts(container) {
-  const isBn = state.lang === 'bn';
+  var isBn = state.lang === 'bn';
 
-  const totalCostVal = state.products.reduce((acc, p) => acc + (p.stock * p.buy_price), 0);
-  const totalRetailVal = state.products.reduce((acc, p) => acc + (p.stock * p.sell_price), 0);
-  const totalPotentialProfit = totalRetailVal - totalCostVal;
-  const inStockCount = state.products.filter(p => p.stock > 0).length;
-  const outOfStockCount = state.products.filter(p => p.stock === 0).length;
+  var totalCostVal = state.products.reduce(function(acc, p) { return acc + (p.stock * p.buy_price); }, 0);
+  var totalRetailVal = state.products.reduce(function(acc, p) { return acc + (p.stock * p.sell_price); }, 0);
+  var totalPotentialProfit = totalRetailVal - totalCostVal;
+  var inStockCount = state.products.filter(function(p) { return p.stock > 0; }).length;
+  var outOfStockCount = state.products.filter(function(p) { return p.stock === 0; }).length;
 
-  const filtered = state.products.filter(p => {
-    const matchSearch = p.name.toLowerCase().includes(state.productSearchTerm.toLowerCase()) ||
-                        p.category.toLowerCase().includes(state.productSearchTerm.toLowerCase());
-    const matchCat = state.productCategoryFilter === 'সব' || p.category === state.productCategoryFilter;
-    const matchStock = state.productStockFilter === 'all' ? true :
-                       state.productStockFilter === 'in_stock' ? p.stock > 0 : p.stock === 0;
+  var filtered = state.products.filter(function(p) {
+    var matchSearch = p.name.toLowerCase().includes(state.productSearchTerm.toLowerCase()) ||
+                      p.category.toLowerCase().includes(state.productSearchTerm.toLowerCase());
+    var matchCat = state.productCategoryFilter === 'সব' || p.category === state.productCategoryFilter;
+    var matchStock = state.productStockFilter === 'all' ? true :
+                     state.productStockFilter === 'in_stock' ? p.stock > 0 : p.stock === 0;
     return matchSearch && matchCat && matchStock;
   });
 
   container.innerHTML = `
+    ${renderSyncNoticeBanner()}
+
     <!-- Inventory Valuation Cards -->
     <div class="kpi-grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));">
       <div class="kpi-card">
@@ -627,7 +933,7 @@ function renderProducts(container) {
           <span>✨</span>
         </div>
         <div class="kpi-value tabular-nums" style="color:#4f46e5">${formatTaka(totalPotentialProfit)}</div>
-        <div class="kpi-subtext">${totalRetailVal > 0 ? ((totalPotentialProfit/totalRetailVal)*100).toFixed(1) + '% ' + (isBn ? 'মার্জিন' : 'margin') : '0%'}</div>
+        <div class="kpi-subtext">${totalRetailVal > 0 ? ((totalPotentialProfit / totalRetailVal) * 100).toFixed(1) + '% ' + (isBn ? 'মার্জিন' : 'margin') : '0%'}</div>
       </div>
 
       <div class="kpi-card">
@@ -664,9 +970,9 @@ function renderProducts(container) {
       <div style="padding:10px 20px; background-color:#fafbfc; border-bottom:1px solid var(--color-border); display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; font-size:0.75rem;">
         <div style="display:flex; flex-wrap:wrap; align-items:center; gap:6px;">
           <span style="color:var(--color-text-subtle); margin-right:4px;">${isBn ? 'ক্যাটাগরি:' : 'Category:'}</span>
-          ${CATEGORIES.map(c => `
-            <button class="chip ${state.productCategoryFilter === c ? 'active' : ''}" onclick="setProductCategoryFilter('${c}')">${c}</button>
-          `).join('')}
+          ${CATEGORIES.map(function(c) {
+            return '<button class="chip ' + (state.productCategoryFilter === c ? 'active' : '') + '" onclick="setProductCategoryFilter(\'' + c + '\')">' + c + '</button>';
+          }).join('')}
         </div>
         <div style="display:flex; align-items:center; gap:4px; background:var(--color-surface-muted); padding:2px; border-radius:6px;">
           <button class="chip ${state.productStockFilter === 'all' ? 'active' : ''}" style="margin:0" onclick="setProductStockFilter('all')">${isBn ? 'সব' : 'All'}</button>
@@ -699,10 +1005,10 @@ function renderProducts(container) {
                   ${isBn ? 'কোনো পণ্য খুঁজে পাওয়া যায়নি' : 'No products found'}
                 </td>
               </tr>
-            ` : filtered.map(p => {
-              const profit = p.sell_price - p.buy_price;
-              const isZero = p.stock === 0;
-              const isLow = p.stock > 0 && p.stock <= (p.minStockAlert || 15);
+            ` : filtered.map(function(p) {
+              var profit = p.sell_price - p.buy_price;
+              var isZero = p.stock === 0;
+              var isLow = p.stock > 0 && p.stock <= (p.minStockAlert || 15);
               return `
                 <tr style="${isZero ? 'background-color:rgba(225,29,72,0.03)' : ''}">
                   <td class="text-center font-mono" style="color:var(--color-text-subtle)">${p.id}</td>
@@ -716,13 +1022,9 @@ function renderProducts(container) {
                     ${p.stock}
                   </td>
                   <td class="text-center">
-                    ${isZero ? `
-                      <span class="status-pill status-out-stock">${isBn ? 'স্টক শেষ' : 'Out'}</span>
-                    ` : (isLow ? `
-                      <span class="status-pill status-low-stock">${isBn ? 'কম স্টক' : 'Low'}</span>
-                    ` : `
-                      <span class="status-pill status-in-stock">${isBn ? 'উপলব্ধ' : 'In Stock'}</span>
-                    `)}
+                    ${isZero ? '<span class="status-pill status-out-stock">' + (isBn ? 'স্টক শেষ' : 'Out') + '</span>' :
+                      (isLow ? '<span class="status-pill status-low-stock">' + (isBn ? 'কম স্টক' : 'Low') + '</span>' :
+                      '<span class="status-pill status-in-stock">' + (isBn ? 'উপলব্ধ' : 'In Stock') + '</span>')}
                   </td>
                   <td class="text-right">
                     <div style="display:inline-flex; align-items:center; gap:4px;">
@@ -757,42 +1059,44 @@ window.setProductStockFilter = function(filter) {
   renderProducts(document.getElementById('app-main-content'));
 };
 
-window.quickRestockItem = function(prodId, qty) {
-  const prod = state.products.find(p => p.id === prodId);
+window.quickRestockItem = async function(prodId, qty) {
+  var prod = state.products.find(function(p) { return p.id === prodId; });
   if (!prod) return;
   prod.stock += qty;
-  saveProducts();
+  await saveProductToDb(prod);
   render();
 };
 
-window.deleteProductItem = function(prodId) {
-  const isBn = state.lang === 'bn';
-  const prod = state.products.find(p => p.id === prodId);
+window.deleteProductItem = async function(prodId) {
+  var isBn = state.lang === 'bn';
+  var prod = state.products.find(function(p) { return p.id === prodId; });
   if (!prod) return;
-  if (confirm(isBn ? `আপনি কি "${prod.name}" পণ্যটি মুছে ফেলতে চান?` : `Delete product "${prod.name}"?`)) {
-    state.products = state.products.filter(p => p.id !== prodId);
-    saveProducts();
+  if (confirm(isBn ? 'আপনি কি "' + prod.name + '" পণ্যটি মুছে ফেলতে চান?' : 'Delete product "' + prod.name + '"?')) {
+    state.products = state.products.filter(function(p) { return p.id !== prodId; });
+    await deleteProductFromDb(prodId);
     render();
   }
 };
 
 window.exportProductsCSV = function() {
-  const headers = ['ID', 'Name', 'Category', 'Buy Price (BDT)', 'Sell Price (BDT)', 'Unit', 'Stock Qty', 'Status'];
-  const rows = state.products.map(p => [
-    p.id,
-    `"${p.name.replace(/"/g, '""')}"`,
-    `"${p.category}"`,
-    p.buy_price,
-    p.sell_price,
-    p.unit,
-    p.stock,
-    p.stock > 0 ? 'In Stock' : 'Out of Stock'
-  ]);
-  const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
-  const encoded = encodeURI(csvContent);
-  const a = document.createElement('a');
+  var headers = ['ID', 'Name', 'Category', 'Buy Price (BDT)', 'Sell Price (BDT)', 'Unit', 'Stock Qty', 'Status'];
+  var rows = state.products.map(function(p) {
+    return [
+      p.id,
+      '"' + p.name.replace(/"/g, '""') + '"',
+      '"' + p.category + '"',
+      p.buy_price,
+      p.sell_price,
+      p.unit,
+      p.stock,
+      p.stock > 0 ? 'In Stock' : 'Out of Stock'
+    ];
+  });
+  var csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + [headers.join(','), ...rows.map(function(e) { return e.join(','); })].join('\n');
+  var encoded = encodeURI(csvContent);
+  var a = document.createElement('a');
   a.setAttribute('href', encoded);
-  a.setAttribute('download', `agri_products_${new Date().toISOString().slice(0, 10)}.csv`);
+  a.setAttribute('download', 'agri_products_' + new Date().toISOString().slice(0, 10) + '.csv');
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -800,22 +1104,24 @@ window.exportProductsCSV = function() {
 
 // ----------------- 3. SALES HISTORY & LEDGER -----------------
 function renderHistory(container) {
-  const isBn = state.lang === 'bn';
+  var isBn = state.lang === 'bn';
 
-  const filtered = state.sales.filter(s => {
-    const matchSearch = s.customerName.toLowerCase().includes(state.salesSearchTerm.toLowerCase()) ||
-                        s.memoNo.toLowerCase().includes(state.salesSearchTerm.toLowerCase()) ||
-                        (s.customerPhone && s.customerPhone.includes(state.salesSearchTerm));
-    const matchDue = state.salesDueFilter === 'all' ? true :
-                     state.salesDueFilter === 'due_only' ? s.dueAmount > 0 : s.dueAmount === 0;
+  var filtered = state.sales.filter(function(s) {
+    var matchSearch = s.customerName.toLowerCase().includes(state.salesSearchTerm.toLowerCase()) ||
+                      s.memoNo.toLowerCase().includes(state.salesSearchTerm.toLowerCase()) ||
+                      (s.customerPhone && s.customerPhone.includes(state.salesSearchTerm));
+    var matchDue = state.salesDueFilter === 'all' ? true :
+                   state.salesDueFilter === 'due_only' ? s.dueAmount > 0 : s.dueAmount === 0;
     return matchSearch && matchDue;
   });
 
-  const totalRev = filtered.reduce((acc, s) => acc + s.netPayable, 0);
-  const totalProf = filtered.reduce((acc, s) => acc + s.profit, 0);
-  const totalDue = filtered.reduce((acc, s) => acc + s.dueAmount, 0);
+  var totalRev = filtered.reduce(function(acc, s) { return acc + s.netPayable; }, 0);
+  var totalProf = filtered.reduce(function(acc, s) { return acc + s.profit; }, 0);
+  var totalDue = filtered.reduce(function(acc, s) { return acc + s.dueAmount; }, 0);
 
   container.innerHTML = `
+    ${renderSyncNoticeBanner()}
+
     <!-- History KPI Strip -->
     <div class="kpi-grid">
       <div class="kpi-card">
@@ -833,7 +1139,7 @@ function renderHistory(container) {
           <span>📈</span>
         </div>
         <div class="kpi-value tabular-nums" style="color:var(--color-primary)">${formatTaka(totalProf)}</div>
-        <div class="kpi-subtext">${totalRev > 0 ? ((totalProf/totalRev)*100).toFixed(1) + '% ' + (isBn ? 'মার্জিন' : 'margin') : '0%'}</div>
+        <div class="kpi-subtext">${totalRev > 0 ? ((totalProf / totalRev) * 100).toFixed(1) + '% ' + (isBn ? 'মার্জিন' : 'margin') : '0%'}</div>
       </div>
 
       <div class="kpi-card">
@@ -894,31 +1200,34 @@ function renderHistory(container) {
                   ${isBn ? 'কোনো বিক্রির রেকর্ড পাওয়া যায়নি' : 'No sales records found'}
                 </td>
               </tr>
-            ` : filtered.map(sale => `
-              <tr>
-                <td class="font-mono" style="font-weight:700">${sale.memoNo}</td>
-                <td style="color:var(--color-text-subtle)">${sale.date}</td>
-                <td style="font-weight:600">
-                  ${sale.customerName}
-                  ${sale.customerPhone ? `<div style="font-size:0.6875rem; color:var(--color-text-subtle)">${sale.customerPhone}</div>` : ''}
-                </td>
-                <td>
-                  ${sale.items.map(it => `<div>${it.productName} × ${it.quantity} ${it.unit}</div>`).join('')}
-                </td>
-                <td class="text-right font-mono" style="font-weight:700">${formatTaka(sale.netPayable)}</td>
-                <td class="text-right font-mono" style="font-weight:700; color:var(--color-primary)">${formatTaka(sale.profit)}</td>
-                <td class="text-center">
-                  <div>${sale.paymentMethod}</div>
-                  ${sale.dueAmount > 0 ? `<div style="color:var(--color-danger); font-size:0.6875rem; font-weight:700 font-mono">বাকি: ৳${sale.dueAmount}</div>` : `<div style="color:var(--color-primary); font-size:0.6875rem">পরিশোধিত</div>`}
-                </td>
-                <td class="text-right">
-                  <div style="display:inline-flex; align-items:center; gap:4px;">
-                    <button class="btn btn-outline btn-sm" onclick="showInvoiceModal('${sale.id}')">👁️ ${isBn ? 'মেমো' : 'Memo'}</button>
-                    <button class="btn btn-outline btn-sm" style="color:var(--color-danger)" title="${isBn ? 'বিক্রি বাতিল ও স্টক ফেরত' : 'Revert sale'}" onclick="revertSaleRecord('${sale.id}')">🗑️</button>
-                  </div>
-                </td>
-              </tr>
-            `).join('')}
+            ` : filtered.map(function(sale) {
+              var itemsHtml = (sale.items || []).map(function(it) {
+                return '<div>' + it.productName + ' × ' + it.quantity + ' ' + it.unit + '</div>';
+              }).join('');
+              return `
+                <tr>
+                  <td class="font-mono" style="font-weight:700">${sale.memoNo}</td>
+                  <td style="color:var(--color-text-subtle)">${sale.date}</td>
+                  <td style="font-weight:600">
+                    ${sale.customerName}
+                    ${sale.customerPhone ? '<div style="font-size:0.6875rem; color:var(--color-text-subtle)">' + sale.customerPhone + '</div>' : ''}
+                  </td>
+                  <td>${itemsHtml || '-'}</td>
+                  <td class="text-right font-mono" style="font-weight:700">${formatTaka(sale.netPayable)}</td>
+                  <td class="text-right font-mono" style="font-weight:700; color:var(--color-primary)">${formatTaka(sale.profit)}</td>
+                  <td class="text-center">
+                    <div>${sale.paymentMethod}</div>
+                    ${sale.dueAmount > 0 ? '<div class="font-mono" style="color:var(--color-danger); font-size:0.6875rem; font-weight:700;">বাকি: ৳' + sale.dueAmount + '</div>' : '<div style="color:var(--color-primary); font-size:0.6875rem">পরিশোধিত</div>'}
+                  </td>
+                  <td class="text-right">
+                    <div style="display:inline-flex; align-items:center; gap:4px;">
+                      <button class="btn btn-outline btn-sm" onclick="showInvoiceModal('${sale.id}')">👁️ ${isBn ? 'মেমো' : 'Memo'}</button>
+                      <button class="btn btn-outline btn-sm" style="color:var(--color-danger)" title="${isBn ? 'বিক্রি বাতিল ও স্টক ফেরত' : 'Revert sale'}" onclick="revertSaleRecord('${sale.id}')">🗑️</button>
+                    </div>
+                  </td>
+                </tr>
+              `;
+            }).join('')}
           </tbody>
         </table>
       </div>
@@ -936,49 +1245,56 @@ window.setSalesDueFilter = function(filter) {
   renderHistory(document.getElementById('app-main-content'));
 };
 
-window.revertSaleRecord = function(saleId) {
-  const isBn = state.lang === 'bn';
-  const sale = state.sales.find(s => s.id === saleId);
+window.revertSaleRecord = async function(saleId) {
+  var isBn = state.lang === 'bn';
+  var sale = state.sales.find(function(s) { return s.id === String(saleId); });
   if (!sale) return;
 
-  if (confirm(isBn ? `আপনি কি মেমো (${sale.memoNo}) বাতিল করতে চান? বিক্রিত পণ্য স্বয়ংক্রিয়ভাবে মূল স্টকে ফেরত যাবে।` : `Revert memo ${sale.memoNo}? Stock will be restored.`)) {
-    // Restore stock
-    sale.items.forEach(it => {
-      const prod = state.products.find(p => p.id === it.productId);
+  if (confirm(isBn ? 'আপনি কি মেমো (' + sale.memoNo + ') বাতিল করতে চান? বিক্রিত পণ্য স্বয়ংক্রিয়ভাবে মূল স্টকে ফেরত যাবে।' : 'Revert memo ' + sale.memoNo + '? Stock will be restored.')) {
+    var updatedProducts = [];
+    (sale.items || []).forEach(function(it) {
+      var prod = state.products.find(function(p) { return p.id === it.productId; });
       if (prod) {
-        prod.stock += it.quantity;
+        prod.stock += Number(it.quantity || 0);
+        updatedProducts.push(prod);
       }
     });
-    saveProducts();
 
-    state.sales = state.sales.filter(s => s.id !== saleId);
-    saveSales();
+    for (var i = 0; i < updatedProducts.length; i++) {
+      await saveProductToDb(updatedProducts[i]);
+    }
+
+    state.sales = state.sales.filter(function(s) { return s.id !== String(saleId); });
+    await deleteSaleFromDb(saleId);
     render();
   }
 };
 
 window.exportSalesCSV = function() {
-  const headers = ['Memo No', 'Date', 'Customer', 'Phone', 'Items', 'Amount (BDT)', 'Discount (BDT)', 'Net Payable (BDT)', 'Cost (BDT)', 'Profit (BDT)', 'Paid (BDT)', 'Due (BDT)', 'Payment Method'];
-  const rows = state.sales.map(s => [
-    `"${s.memoNo}"`,
-    `"${s.date}"`,
-    `"${s.customerName.replace(/"/g, '""')}"`,
-    `"${s.customerPhone || ''}"`,
-    `"${s.items.map(i => `${i.productName} (${i.quantity} ${i.unit})`).join('; ')}"`,
-    s.totalAmount,
-    s.discount,
-    s.netPayable,
-    s.totalCost,
-    s.profit,
-    s.paidAmount,
-    s.dueAmount,
-    `"${s.paymentMethod}"`
-  ]);
-  const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
-  const encoded = encodeURI(csvContent);
-  const a = document.createElement('a');
+  var headers = ['Memo No', 'Date', 'Customer', 'Phone', 'Items', 'Amount (BDT)', 'Discount (BDT)', 'Net Payable (BDT)', 'Cost (BDT)', 'Profit (BDT)', 'Paid (BDT)', 'Due (BDT)', 'Payment Method'];
+  var rows = state.sales.map(function(s) {
+    var itemSummary = (s.items || []).map(function(i) { return i.productName + ' (' + i.quantity + ' ' + i.unit + ')'; }).join('; ');
+    return [
+      '"' + s.memoNo + '"',
+      '"' + s.date + '"',
+      '"' + s.customerName.replace(/"/g, '""') + '"',
+      '"' + (s.customerPhone || '') + '"',
+      '"' + itemSummary + '"',
+      s.totalAmount,
+      s.discount,
+      s.netPayable,
+      s.totalCost,
+      s.profit,
+      s.paidAmount,
+      s.dueAmount,
+      '"' + s.paymentMethod + '"'
+    ];
+  });
+  var csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + [headers.join(','), ...rows.map(function(e) { return e.join(','); })].join('\n');
+  var encoded = encodeURI(csvContent);
+  var a = document.createElement('a');
   a.setAttribute('href', encoded);
-  a.setAttribute('download', `sales_ledger_${new Date().toISOString().slice(0, 10)}.csv`);
+  a.setAttribute('download', 'sales_ledger_' + new Date().toISOString().slice(0, 10) + '.csv');
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -986,12 +1302,14 @@ window.exportSalesCSV = function() {
 
 // ----------------- 4. RESTOCK & AUDIT -----------------
 function renderRestock(container) {
-  const isBn = state.lang === 'bn';
-  const outOfStock = state.products.filter(p => p.stock === 0);
-  const lowStock = state.products.filter(p => p.stock > 0 && p.stock <= (p.minStockAlert || 15));
-  const optimal = state.products.filter(p => p.stock > (p.minStockAlert || 15));
+  var isBn = state.lang === 'bn';
+  var outOfStock = state.products.filter(function(p) { return p.stock === 0; });
+  var lowStock = state.products.filter(function(p) { return p.stock > 0 && p.stock <= (p.minStockAlert || 15); });
+  var optimal = state.products.filter(function(p) { return p.stock > (p.minStockAlert || 15); });
 
   container.innerHTML = `
+    ${renderSyncNoticeBanner()}
+
     <!-- Restock Overview Cards -->
     <div class="kpi-grid">
       <div class="kpi-card" style="border-color:#fecdd3; background:#fff1f2">
@@ -1047,9 +1365,9 @@ function renderRestock(container) {
             </tr>
           </thead>
           <tbody>
-            ${[...outOfStock, ...lowStock, ...optimal].map(p => {
-              const isZero = p.stock === 0;
-              const isLow = p.stock > 0 && p.stock <= (p.minStockAlert || 15);
+            ${[...outOfStock, ...lowStock, ...optimal].map(function(p) {
+              var isZero = p.stock === 0;
+              var isLow = p.stock > 0 && p.stock <= (p.minStockAlert || 15);
               return `
                 <tr style="${isZero ? 'background-color:rgba(225,29,72,0.03)' : (isLow ? 'background-color:rgba(217,119,6,0.03)' : '')}">
                   <td>
@@ -1059,7 +1377,7 @@ function renderRestock(container) {
                   <td style="color:var(--color-text-muted)">${p.category}</td>
                   <td class="text-center font-mono" style="font-weight:700; color:${isZero ? 'var(--color-danger)' : (isLow ? 'var(--color-warning)' : 'inherit')}">
                     ${p.stock} ${p.unit}
-                    ${isZero ? `<div style="font-size:0.625rem; color:var(--color-danger)">স্টক শেষ</div>` : ''}
+                    ${isZero ? '<div style="font-size:0.625rem; color:var(--color-danger)">স্টক শেষ</div>' : ''}
                   </td>
                   <td class="text-center font-mono">৳${p.buy_price}</td>
                   <td class="text-center">
@@ -1086,35 +1404,35 @@ function renderRestock(container) {
   `;
 }
 
-window.submitRestock = function(prodId) {
-  const isBn = state.lang === 'bn';
-  const prod = state.products.find(p => p.id === prodId);
+window.submitRestock = async function(prodId) {
+  var isBn = state.lang === 'bn';
+  var prod = state.products.find(function(p) { return p.id === prodId; });
   if (!prod) return;
 
-  const qtyInput = document.getElementById(`restock-qty-${prodId}`);
-  const priceInput = document.getElementById(`restock-price-${prodId}`);
+  var qtyInput = document.getElementById('restock-qty-' + prodId);
+  var priceInput = document.getElementById('restock-price-' + prodId);
 
-  const addQty = parseFloat(qtyInput ? qtyInput.value : 0) || 0;
-  const newPrice = parseFloat(priceInput ? priceInput.value : 0) || prod.buy_price;
+  var addQty = parseFloat(qtyInput ? qtyInput.value : 0) || 0;
+  var newPrice = parseFloat(priceInput ? priceInput.value : 0) || prod.buy_price;
 
   if (addQty <= 0) return;
 
   prod.stock += addQty;
   if (newPrice > 0) prod.buy_price = newPrice;
 
-  saveProducts();
-  alert(isBn ? `সফলভাবে ${prod.name} পণ্যে +${addQty} ${prod.unit} যোগ করা হয়েছে!` : `Added +${addQty} ${prod.unit} to ${prod.name}!`);
+  await saveProductToDb(prod);
+  alert(isBn ? 'সফলভাবে ' + prod.name + ' পণ্যে +' + addQty + ' ' + prod.unit + ' যোগ করা হয়েছে!' : 'Added +' + addQty + ' ' + prod.unit + ' to ' + prod.name + '!');
   render();
 };
 
 // ----------------- MODALS -----------------
 window.showInvoiceModal = function(saleId) {
-  const sale = state.sales.find(s => s.id === saleId);
+  var sale = state.sales.find(function(s) { return s.id === String(saleId); });
   if (!sale) return;
 
-  const isBn = state.lang === 'bn';
-  const overlay = document.getElementById('invoice-modal-overlay');
-  const memoContainer = document.getElementById('printable-cash-memo');
+  var isBn = state.lang === 'bn';
+  var overlay = document.getElementById('invoice-modal-overlay');
+  var memoContainer = document.getElementById('printable-cash-memo');
   if (!overlay || !memoContainer) return;
 
   memoContainer.innerHTML = `
@@ -1136,7 +1454,7 @@ window.showInvoiceModal = function(saleId) {
       <div>
         <div style="color:#64748b">${isBn ? 'কাস্টমারের নাম:' : 'Customer Name:'}</div>
         <div style="font-weight:700; font-size:0.875rem; color:#0f172a">${sale.customerName}</div>
-        ${sale.customerPhone ? `<div style="color:#475569">${isBn ? 'ফোন:' : 'Phone:'} ${sale.customerPhone}</div>` : ''}
+        ${sale.customerPhone ? '<div style="color:#475569">' + (isBn ? 'ফোন:' : 'Phone:') + ' ' + sale.customerPhone + '</div>' : ''}
       </div>
       <div style="text-align:right;">
         <div style="color:#64748b">${isBn ? 'মেমো নম্বর:' : 'Memo No:'}</div>
@@ -1157,17 +1475,19 @@ window.showInvoiceModal = function(saleId) {
         </tr>
       </thead>
       <tbody>
-        ${sale.items.map(item => `
-          <tr style="border-bottom:1px solid #e2e8f0;">
-            <td style="padding:6px 8px;">
-              <strong>${item.productName}</strong>
-              <div style="font-size:0.6875rem; color:#64748b">${item.category}</div>
-            </td>
-            <td style="padding:6px 8px; text-align:center;" class="font-mono">${item.quantity} ${item.unit}</td>
-            <td style="padding:6px 8px; text-align:right;" class="font-mono">৳${item.sellPrice}</td>
-            <td style="padding:6px 8px; text-align:right; font-weight:700;" class="font-mono">৳${item.totalAmount}</td>
-          </tr>
-        `).join('')}
+        ${(sale.items || []).map(function(item) {
+          return `
+            <tr style="border-bottom:1px solid #e2e8f0;">
+              <td style="padding:6px 8px;">
+                <strong>${item.productName}</strong>
+                <div style="font-size:0.6875rem; color:#64748b">${item.category}</div>
+              </td>
+              <td style="padding:6px 8px; text-align:center;" class="font-mono">${item.quantity} ${item.unit}</td>
+              <td style="padding:6px 8px; text-align:right;" class="font-mono">৳${item.sellPrice}</td>
+              <td style="padding:6px 8px; text-align:right; font-weight:700;" class="font-mono">৳${item.totalAmount}</td>
+            </tr>
+          `;
+        }).join('')}
       </tbody>
     </table>
 
@@ -1224,7 +1544,7 @@ window.showInvoiceModal = function(saleId) {
 };
 
 window.closeInvoiceModal = function() {
-  const overlay = document.getElementById('invoice-modal-overlay');
+  var overlay = document.getElementById('invoice-modal-overlay');
   if (overlay) overlay.classList.remove('active');
 };
 
@@ -1234,12 +1554,12 @@ window.printInvoice = function() {
 
 window.showProductModal = function(prodId) {
   state.editingProductId = prodId;
-  const isBn = state.lang === 'bn';
-  const overlay = document.getElementById('product-modal-overlay');
-  const title = document.getElementById('product-modal-title');
+  var isBn = state.lang === 'bn';
+  var overlay = document.getElementById('product-modal-overlay');
+  var title = document.getElementById('product-modal-title');
   if (!overlay) return;
 
-  const prod = prodId ? state.products.find(p => p.id === prodId) : null;
+  var prod = prodId ? state.products.find(function(p) { return p.id === prodId; }) : null;
 
   if (title) {
     title.textContent = prod ? (isBn ? 'পণ্য এডিট করুন' : 'Edit Product') : (isBn ? 'নতুন পণ্য যোগ করুন' : 'Add New Product');
@@ -1257,25 +1577,26 @@ window.showProductModal = function(prodId) {
 };
 
 window.closeProductModal = function() {
-  const overlay = document.getElementById('product-modal-overlay');
+  var overlay = document.getElementById('product-modal-overlay');
   if (overlay) overlay.classList.remove('active');
   state.editingProductId = null;
 };
 
-window.handleSaveProductModal = function(e) {
+window.handleSaveProductModal = async function(e) {
   e.preventDefault();
-  const name = document.getElementById('modal-prod-name').value.trim();
-  const category = document.getElementById('modal-prod-category').value;
-  const buy_price = parseFloat(document.getElementById('modal-prod-buy').value) || 0;
-  const sell_price = parseFloat(document.getElementById('modal-prod-sell').value) || 0;
-  const unit = document.getElementById('modal-prod-unit').value;
-  const stock = parseFloat(document.getElementById('modal-prod-stock').value) || 0;
-  const minStockAlert = parseFloat(document.getElementById('modal-prod-alert').value) || 20;
+  var name = document.getElementById('modal-prod-name').value.trim();
+  var category = document.getElementById('modal-prod-category').value;
+  var buy_price = parseFloat(document.getElementById('modal-prod-buy').value) || 0;
+  var sell_price = parseFloat(document.getElementById('modal-prod-sell').value) || 0;
+  var unit = document.getElementById('modal-prod-unit').value;
+  var stock = parseFloat(document.getElementById('modal-prod-stock').value) || 0;
+  var minStockAlert = parseFloat(document.getElementById('modal-prod-alert').value) || 20;
 
   if (!name) return;
 
+  var savedProd = null;
   if (state.editingProductId) {
-    const prod = state.products.find(p => p.id === state.editingProductId);
+    var prod = state.products.find(function(p) { return p.id === state.editingProductId; });
     if (prod) {
       prod.name = name;
       prod.category = category;
@@ -1284,93 +1605,80 @@ window.handleSaveProductModal = function(e) {
       prod.unit = unit;
       prod.stock = stock;
       prod.minStockAlert = minStockAlert;
+      savedProd = prod;
     }
   } else {
-    const nextId = state.products.length > 0 ? Math.max(...state.products.map(p => p.id)) + 1 : 1;
-    state.products.push({
+    var nextId = state.products.length > 0 ? Math.max.apply(null, state.products.map(function(p) { return p.id; })) + 1 : 1;
+    savedProd = {
       id: nextId,
-      name,
-      category,
-      buy_price,
-      sell_price,
-      unit,
-      stock,
-      minStockAlert
-    });
+      name: name,
+      category: category,
+      buy_price: buy_price,
+      sell_price: sell_price,
+      unit: unit,
+      stock: stock,
+      minStockAlert: minStockAlert,
+    };
+    state.products.push(savedProd);
   }
 
-  saveProducts();
+  if (savedProd) {
+    await saveProductToDb(savedProd);
+  }
   closeProductModal();
   render();
 };
 
 // Reset data to defaults
-window.resetAllData = function() {
-  const isBn = state.lang === 'bn';
+window.resetAllData = async function() {
+  var isBn = state.lang === 'bn';
   if (confirm(isBn ? 'সতর্কতা: এটি পূর্বের সকল পরিবর্তন মুছে দিয়ে প্রাথমিক ২৯টি পণ্যের ডেটায় রিসেট করবে। আপনি কি এগিয়ে যেতে চান?' : 'Warning: Reset all data to default 29 products?')) {
     state.products = JSON.parse(JSON.stringify(INITIAL_PRODUCTS));
     state.sales = [];
-    saveProducts();
-    saveSales();
+    saveLocalProducts();
+    saveLocalSales();
+
+    if (supabaseClient) {
+      try {
+        await supabaseClient.from('sales').delete().neq('id', '');
+        await supabaseClient.from('products').upsert(state.products);
+      } catch (err) {
+        console.warn('Reset in Supabase failed:', err);
+      }
+    }
     render();
   }
 };
 
 // Global Init
-document.addEventListener('DOMContentLoaded', () => {
-  loadState();
-
-  // Navigation handlers
-  document.querySelectorAll('[data-tab]').forEach(btn => {
-    btn.addEventListener('click', () => {
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('[data-tab]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
       state.currentTab = btn.dataset.tab;
       render();
     });
   });
 
-  const langBtn = document.getElementById('lang-toggle-btn');
+  var langBtn = document.getElementById('lang-toggle-btn');
   if (langBtn) {
-    langBtn.addEventListener('click', () => {
+    langBtn.addEventListener('click', function() {
       state.lang = state.lang === 'bn' ? 'en' : 'bn';
-      localStorage.setItem('standalone_agri_lang', state.lang);
+      try {
+        localStorage.setItem(STORAGE_KEYS.LANG, state.lang);
+      } catch (e) {}
       render();
     });
   }
 
-  const resetBtn = document.getElementById('reset-data-btn');
+  var resetBtn = document.getElementById('reset-data-btn');
   if (resetBtn) {
     resetBtn.addEventListener('click', resetAllData);
   }
 
-  const modalForm = document.getElementById('product-modal-form');
+  var modalForm = document.getElementById('product-modal-form');
   if (modalForm) {
     modalForm.onsubmit = handleSaveProductModal;
   }
 
-  render();
+  loadState();
 });
-// বিক্রয় বা হিসাবের ডাটা সেভ করার ফাংশন
-async function saveSaleData(saleData) {
-    const { data, error } = await supabase
-        .from('sales')
-        .insert([saleData]);
-
-    if (error) {
-        console.error('ডাটা সেভ করতে সমস্যা হয়েছে:', error);
-    } else {
-        console.log('ডাটা সফলভাবে সেভ হয়েছে:', data);
-    }
-}
-
-// ডাটা লোড বা ফেচ করার ফাংশন
-async function loadSalesData() {
-    const { data, error } = await supabase
-        .from('sales')
-        .select('*');
-
-    if (error) {
-        console.error('ডাটা লোড করতে সমস্যা হয়েছে:', error);
-        return [];
-    }
-    return data;
-}
