@@ -152,6 +152,16 @@ function saveJsonStorage(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
 }
 
+function loadSavedTheme() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEYS.THEME) || localStorage.getItem('theme');
+    if (saved === 'dark' || saved === 'light') return saved;
+  } catch (e) {}
+  return document.documentElement.getAttribute('data-theme') === 'dark' || document.documentElement.classList.contains('dark')
+    ? 'dark'
+    : 'light';
+}
+
 // ----------------- APPLICATION STATE -----------------
 const state = {
   products: [],
@@ -159,7 +169,7 @@ const state = {
   customers: JSON.parse(JSON.stringify(INITIAL_REGULAR_CUSTOMERS)),
   currentTab: 'dashboard',
   lang: 'bn',
-  theme: 'light',
+  theme: loadSavedTheme(),
   typography: Object.assign({}, DEFAULT_TYPOGRAPHY, loadJsonStorage(STORAGE_KEYS.TYPOGRAPHY, {})),
   sessionDate: getLocalDateKey(),
   selectedCustomerId: 'cust_1',
@@ -204,17 +214,31 @@ function applyTypographySettings(cfg) {
   root.style.setProperty('--app-font-family', FONT_FAMILY_MAP[t.family] || FONT_FAMILY_MAP.sutonny);
 }
 
-function applyTheme(theme) {
+function applyTheme(theme, persist) {
   state.theme = theme === 'dark' ? 'dark' : 'light';
-  if (state.theme === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
-  else document.documentElement.removeAttribute('data-theme');
-  try { localStorage.setItem(STORAGE_KEYS.THEME, state.theme); } catch (e) {}
+  const isDark = state.theme === 'dark';
+  const root = document.documentElement;
+  if (isDark) {
+    root.setAttribute('data-theme', 'dark');
+    root.classList.add('dark');
+    root.style.colorScheme = 'dark';
+  } else {
+    root.removeAttribute('data-theme');
+    root.classList.remove('dark');
+    root.style.colorScheme = 'light';
+  }
+  if (persist !== false) {
+    try { localStorage.setItem(STORAGE_KEYS.THEME, state.theme); } catch (e) {}
+  }
   const btn = document.getElementById('theme-toggle-btn');
   if (btn) {
     const isBn = state.lang === 'bn';
-    btn.textContent = state.theme === 'dark' ? (isBn ? '☀️ লাইট' : '☀️ Light') : (isBn ? '🌙 ডার্ক' : '🌙 Dark');
+    btn.textContent = isDark ? (isBn ? '☀️ লাইট' : '☀️ Light') : (isBn ? '🌙 ডার্ক' : '🌙 Dark');
+    btn.setAttribute('aria-pressed', String(isDark));
   }
 }
+
+applyTheme(state.theme, false);
 
 function showToast(message, type) {
   let box = document.getElementById('agri-toast-box');
@@ -281,16 +305,16 @@ function normalizeSale(raw) {
 }
 
 window.loadState = async function() {
-  state.isLoading = true;
-  render();
-
   try {
     const savedLang = localStorage.getItem(STORAGE_KEYS.LANG);
     if (savedLang === 'bn' || savedLang === 'en') state.lang = savedLang;
-    applyTheme(localStorage.getItem(STORAGE_KEYS.THEME) === 'dark' ? 'dark' : 'light');
+    applyTheme(loadSavedTheme(), false);
     state.typography = Object.assign({}, DEFAULT_TYPOGRAPHY, loadJsonStorage(STORAGE_KEYS.TYPOGRAPHY, {}));
     applyTypographySettings(state.typography);
   } catch (e) {}
+
+  state.isLoading = true;
+  render();
 
   const savedCust = loadJsonStorage(STORAGE_KEYS.CUSTOMERS, null);
   state.customers = Array.isArray(savedCust) && savedCust.length > 0 ? savedCust : JSON.parse(JSON.stringify(INITIAL_REGULAR_CUSTOMERS));
@@ -488,7 +512,7 @@ window.render = function() {
   const langBtn = document.getElementById('lang-toggle-btn');
   if (langBtn) langBtn.textContent = state.lang === 'bn' ? 'English' : 'বাংলা';
 
-  applyTheme(state.theme);
+  applyTheme(state.theme, false);
   applyTypographySettings(state.typography);
   updateFooterSyncStatus();
 
@@ -1722,7 +1746,8 @@ function ensureStandaloneEnhancements() {
     const styleEl = document.createElement('style');
     styleEl.id = 'agri-standalone-enhancements-css';
     styleEl.textContent = `
-      :root { --app-font-size: 18px; --app-font-weight: 700; --app-font-family: 'SutonnyMJ', 'Noto Sans Bengali', 'Hind Siliguri', 'Outfit', system-ui, sans-serif; }
+      :root { color-scheme: light; --app-font-size: 18px; --app-font-weight: 700; --app-font-family: 'SutonnyMJ', 'Noto Sans Bengali', 'Hind Siliguri', 'Outfit', system-ui, sans-serif; }
+      [data-theme="dark"], html.dark { color-scheme: dark; }
       html { font-family: var(--app-font-family); font-size: var(--app-font-size); }
       body { font-family: var(--app-font-family); font-weight: var(--app-font-weight); }
       #agri-toast-box { position: fixed; bottom: 22px; right: 22px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
@@ -1789,7 +1814,18 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   const themeBtn = document.getElementById('theme-toggle-btn');
-  if (themeBtn) themeBtn.addEventListener('click', () => applyTheme(state.theme === 'dark' ? 'light' : 'dark'));
+  if (themeBtn) {
+    themeBtn.addEventListener('click', () => {
+      const nextTheme = state.theme === 'dark' ? 'light' : 'dark';
+      applyTheme(nextTheme, true);
+    });
+  }
+
+  window.addEventListener('storage', (ev) => {
+    if (ev.key === STORAGE_KEYS.THEME) {
+      applyTheme(ev.newValue === 'dark' ? 'dark' : 'light', false);
+    }
+  });
 
   const langBtn = document.getElementById('lang-toggle-btn');
   if (langBtn) {
