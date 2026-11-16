@@ -17,6 +17,7 @@
 }
 
 :root {
+  color-scheme: light;
   --app-font-size: 18px;
   --app-font-weight: 700;
   --app-font-family: 'SutonnyMJ', 'Noto Sans Bengali', 'Hind Siliguri', 'Outfit', system-ui, -apple-system, sans-serif;
@@ -56,7 +57,9 @@
   --radius-lg: 18px;
 }
 
-[data-theme="dark"] {
+[data-theme="dark"],
+html.dark {
+  color-scheme: dark;
   --color-primary: #10b981;
   --color-primary-hover: #059669;
   --color-primary-light: rgba(16, 185, 129, 0.14);
