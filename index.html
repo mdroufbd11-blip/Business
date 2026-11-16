@@ -16,8 +16,10 @@
   <script>
     (function() {
       try {
-        if (localStorage.getItem('standalone_agri_theme') === 'dark') {
+        var saved = localStorage.getItem('standalone_agri_theme') || localStorage.getItem('theme');
+        if (saved === 'dark') {
           document.documentElement.setAttribute('data-theme', 'dark');
+          document.documentElement.classList.add('dark');
         }
       } catch (e) {}
     })();
@@ -229,6 +231,6 @@
   <!-- Supabase JS SDK (CDN) -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <!-- Standalone Script -->
-  <script src="./script.js"></script>
+  <script src="./app.js"></script>
 </body>
 </html>
