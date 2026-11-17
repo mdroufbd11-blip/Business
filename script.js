@@ -115,6 +115,79 @@ function isDateWithinLastDays(dateKey, days) {
   const target = new Date(`${dateKey}T12:00:00`).getTime();
   return target >= start.getTime() && target <= end;
 }
+
+// ----------------- REVISED BANGLADESH BENGALI CALENDAR HELPERS -----------------
+const BN_DIGITS_MAP = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'];
+function toBengaliDigits(value) {
+  return String(value).replace(/\d/g, (d) => BN_DIGITS_MAP[Number(d)]);
+}
+
+const BN_MONTHS = [
+  'বৈশাখ', 'জ্যৈষ্ঠ', 'আষাঢ়', 'শ্রাবণ', 'ভাদ্র', 'আশ্বিন',
+  'কার্তিক', 'অগ্রহায়ণ', 'পৌষ', 'মাঘ', 'ফাল্গুন', 'চৈত্র',
+];
+const BN_MONTHS_EN = [
+  'Boishakh', 'Jyoishtho', 'Asharh', 'Shrabon', 'Bhadro', 'Ashwin',
+  'Kartik', 'Agrahayan', 'Poush', 'Magh', 'Falgun', 'Chaitra',
+];
+const GREG_MONTHS_BN = [
+  'জানুয়ারি', 'ফেব্রুয়ারি', 'মার্চ', 'এপ্রিল', 'মে', 'জুন',
+  'জুলাই', 'আগস্ট', 'সেপ্টেম্বর', 'অক্টোবর', 'নভেম্বর', 'ডিসেম্বর',
+];
+
+function formatBengaliOrdinalDay(day) {
+  if (day === 1) return 'পহেলা';
+  if (day === 2) return 'দোসরা';
+  if (day === 3) return 'তেসরা';
+  if (day === 4) return 'চৌঠা';
+  const dStr = toBengaliDigits(day);
+  return day <= 18 ? `${dStr}ই` : `${dStr}শে`;
+}
+
+function getBengaliDateInfo(dateInput) {
+  let gYear;
+  let gMonth; // 1-12
+  let gDay;
+  if (typeof dateInput === 'string' && /^\d{4}-\d{2}-\d{2}/.test(dateInput)) {
+    const parts = dateInput.slice(0, 10).split('-').map(Number);
+    gYear = parts[0];
+    gMonth = parts[1];
+    gDay = parts[2];
+  } else {
+    const d = dateInput instanceof Date && !isNaN(dateInput.getTime()) ? dateInput : new Date();
+    gYear = d.getFullYear();
+    gMonth = d.getMonth() + 1;
+    gDay = d.getDate();
+  }
+
+  const targetUtc = Date.UTC(gYear, gMonth - 1, gDay);
+  const currentPohelaBoishakhUtc = Date.UTC(gYear, 3, 14);
+  const bnStartGregYear = targetUtc >= currentPohelaBoishakhUtc ? gYear : gYear - 1;
+  const pohelaBoishakhUtc = Date.UTC(bnStartGregYear, 3, 14);
+  let remainingDays = Math.floor((targetUtc - pohelaBoishakhUtc) / 86400000);
+
+  const febGregYear = bnStartGregYear + 1;
+  const isBanglaLeapYear = (febGregYear % 4 === 0 && febGregYear % 100 !== 0) || (febGregYear % 400 === 0);
+  const monthLengths = [31, 31, 31, 31, 31, 31, 30, 30, 30, 30, isBanglaLeapYear ? 30 : 29, 30];
+
+  let monthIdx = 0;
+  while (monthIdx < 11 && remainingDays >= monthLengths[monthIdx]) {
+    remainingDays -= monthLengths[monthIdx];
+    monthIdx += 1;
+  }
+
+  const day = remainingDays + 1;
+  const year = bnStartGregYear - 593;
+  const monthNameBn = BN_MONTHS[monthIdx];
+  const monthNameEn = BN_MONTHS_EN[monthIdx];
+  const ordinalDayBn = formatBengaliOrdinalDay(day);
+  const yearBn = toBengaliDigits(year);
+  const gregorianBn = `${toBengaliDigits(gDay)} ${GREG_MONTHS_BN[gMonth - 1]} ${toBengaliDigits(gYear)}`;
+  const fullBn = `${ordinalDayBn} ${monthNameBn}, ${yearBn} বঙ্গাব্দ (${monthNameBn} মাস)`;
+  const fullEn = `${day} ${monthNameEn}, ${year} BS (${monthNameEn} Month)`;
+
+  return { day, monthIdx, monthNameBn, monthNameEn, year, ordinalDayBn, yearBn, gregorianBn, fullBn, fullEn };
+}
 function esc(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')
@@ -633,10 +706,12 @@ function renderCustomerGridHtml() {
   }
   return filtered.map((c) => {
     const isSelected = state.selectedCustomerId === c.id && state.posCustomerName === c.name;
-    return `<div class="customer-card ${isSelected ? 'selected' : ''}" onclick="selectRegularCustomer('${esc(c.id)}')">
-      <span class="customer-edit-badge" title="${isBn ? 'ছবি পরিবর্তন' : 'Edit Photo'}" onclick="event.stopPropagation(); openCustomerSettingsModal('${esc(c.id)}')">📷</span>
-      ${isSelected ? '<span class="customer-check-badge">✓</span>' : ''}
-      ${renderAvatarSvg(c)}
+    return `<div class="customer-card ${isSelected ? 'selected' : ''}" onclick="selectRegularCustomer('${esc(c.id)}')" title="${esc(c.name)}${c.shopName ? ' — ' + esc(c.shopName) : ''}">
+      <div class="customer-avatar-ring">
+        ${renderAvatarSvg(c)}
+        ${isSelected ? '<span class="customer-check-badge">✓</span>' : ''}
+        <span class="customer-edit-badge" title="${isBn ? 'ছবি পরিবর্তন' : 'Edit Photo'}" onclick="event.stopPropagation(); openCustomerSettingsModal('${esc(c.id)}')">📷</span>
+      </div>
       <div class="customer-name-text">${esc(c.name)}</div>
     </div>`;
   }).join('');
@@ -664,15 +739,15 @@ function renderPosProductGridHtml() {
   return filtered.map((p) => {
     const cartEntry = state.cart.find((item) => item.productId === p.id);
     const inCartQty = cartEntry ? cartEntry.quantity : 0;
-    return `<button type="button" class="product-card ${getCategoryCardClass(p.category)} ${inCartQty > 0 ? 'selected' : ''}" title="${inCartQty > 0 ? (isBn ? 'কার্ট থেকে সরাতে আবার ক্লিক করুন' : 'Click again to remove') : (isBn ? 'কার্টে যোগ করতে ক্লিক করুন' : 'Click to add')}" onclick="toggleProductInCart(${p.id})">
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
-        <span class="product-card-cat">${esc(p.category)}</span>
-        ${inCartQty > 0 ? `<span class="in-cart-pill">✓ ${inCartQty} ${esc(p.unit)}</span>` : '<span style="font-weight:800; opacity:0.6;">+</span>'}
+    const isLow = p.stock <= (p.minStockAlert || 15);
+    return `<button type="button" class="product-card ${getCategoryCardClass(p.category)} ${inCartQty > 0 ? 'selected' : ''}" title="${esc(p.category)} — ${inCartQty > 0 ? (isBn ? 'কার্ট থেকে সরাতে আবার ক্লিক করুন' : 'Click again to remove') : (isBn ? 'কার্টে যোগ করতে ক্লিক করুন' : 'Click to add')}" onclick="toggleProductInCart(${p.id})">
+      <div class="product-card-top">
+        <div class="product-card-title">${esc(cleanProductTitle(p.name))}</div>
+        ${inCartQty > 0 ? `<span class="in-cart-pill">✓ ${inCartQty}</span>` : '<span class="product-card-add">+</span>'}
       </div>
-      <div class="product-card-title">${esc(cleanProductTitle(p.name))}</div>
-      <div class="product-card-footer">
-        <span class="font-mono" style="font-weight:800; font-size:1.15rem; color:var(--color-primary);">৳${p.sell_price}<small style="font-size:0.8rem; color:var(--color-text-subtle);">/${esc(p.unit)}</small></span>
-        <span class="font-mono" style="font-size:0.9rem; font-weight:700;">${p.stock} ${esc(p.unit)}</span>
+      <div class="product-card-meta">
+        <span class="product-card-price font-mono">৳${p.sell_price}<small>/${esc(p.unit)}</small></span>
+        <span class="product-card-stock font-mono ${isLow ? 'low' : ''}">${p.stock} ${esc(p.unit)}</span>
       </div>
     </button>`;
   }).join('');
@@ -682,6 +757,7 @@ function renderDashboard(container) {
   const isBn = state.lang === 'bn';
   const todayKey = getLocalDateKey();
   const sessionDate = state.sessionDate || todayKey;
+  const bnDateInfo = getBengaliDateInfo(sessionDate);
   const availableProducts = state.products.filter((p) => p.stock > 0 && p.sell_price > 0);
   const sessionSales = state.sales.filter((s) => extractSaleDateKey(s.date) === sessionDate);
 
@@ -704,8 +780,13 @@ function renderDashboard(container) {
       <div style="display:flex; flex-wrap:wrap; align-items:center; gap:10px;">
         <span style="font-weight:800;">📅 ${isBn ? 'বিক্রি সেশনের তারিখ:' : 'Session Date:'}</span>
         <input type="date" class="form-control font-mono" style="width:auto; padding:6px 12px; font-weight:800;" value="${sessionDate}" onchange="if(this.value){state.sessionDate=this.value; render();}" />
+        <div class="session-date-meta">
+          <span class="session-greg-date">${isBn ? bnDateInfo.gregorianBn : sessionDate}</span>
+          <span class="session-meta-dot" aria-hidden="true">·</span>
+          <span class="session-bengali-date">${isBn ? bnDateInfo.fullBn : bnDateInfo.fullEn}</span>
+        </div>
         ${sessionDate === todayKey
-          ? `<span class="status-pill status-in-stock">${isBn ? 'আজকের আলাদা হিসাব সক্রিয়' : 'Today Active'}</span>`
+          ? ''
           : `<button type="button" class="btn btn-outline btn-sm" onclick="state.sessionDate='${todayKey}'; render();">${isBn ? 'আজকের তারিখে ফিরুন' : 'Reset Today'}</button>`}
       </div>
       <div style="display:flex; flex-wrap:wrap; gap:8px;">
@@ -1855,16 +1936,41 @@ function ensureStandaloneEnhancements() {
       body { font-family: var(--app-font-family); font-weight: var(--app-font-weight); }
       #agri-toast-box { position: fixed; bottom: 22px; right: 22px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
       .session-strip { background-color: var(--color-surface, #fff); border: 1px solid var(--color-border, #e2e8f0); border-radius: 14px; padding: 12px 16px; margin-bottom: 18px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+      .session-date-meta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 0.9rem; line-height: 1.35; }
+      .session-greg-date { font-weight: 700; color: var(--color-text-main); }
+      .session-meta-dot { color: var(--color-text-subtle); font-weight: 800; }
+      .session-bengali-date { font-weight: 800; color: var(--color-primary, #059669); }
       .analytics-mode-tabs { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
-      .customer-name-text { font-size: 1.05rem; font-weight: 800; line-height: 1.3; }
-      .customer-edit-badge { position: absolute; top: 6px; left: 6px; width: 26px; height: 26px; border-radius: 9999px; background: var(--color-surface, #fff); border: 1px solid var(--color-border, #e2e8f0); display: flex; align-items: center; justify-content: center; font-size: 0.78rem; cursor: pointer; }
-      .customer-check-badge { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 9999px; background: var(--color-primary, #059669); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 800; }
+      .customer-grid { display: grid !important; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)) !important; gap: 14px 10px !important; padding: 6px 4px; }
+      .customer-card { background: transparent !important; border: none !important; padding: 4px 2px !important; gap: 7px !important; box-shadow: none !important; }
+      .customer-card.selected { background: transparent !important; border: none !important; box-shadow: none !important; }
+      .customer-avatar-ring { position: relative; width: 64px; height: 64px; border-radius: 9999px; padding: 3px; border: 2px solid var(--color-border, #e2e8f0); background-color: var(--color-surface, #fff); box-shadow: 0 2px 6px rgba(0,0,0,0.08); flex-shrink: 0; }
+      .customer-card.selected .customer-avatar-ring { border-color: var(--color-primary, #059669); box-shadow: 0 0 0 3px rgba(16,185,129,0.25); }
+      .customer-avatar-wrap { width: 100%; height: 100%; border-radius: 9999px; overflow: hidden; display: block; }
+      .customer-name-text { font-size: 0.86rem !important; font-weight: 800; line-height: 1.25; max-width: 96px; }
+      .customer-card.selected .customer-name-text { color: var(--color-primary, #059669); }
+      .customer-edit-badge { position: absolute; bottom: -2px; right: -2px; width: 23px; height: 23px; border-radius: 9999px; background: var(--color-surface, #fff); border: 1px solid var(--color-border, #e2e8f0); display: flex; align-items: center; justify-content: center; font-size: 0.7rem; cursor: pointer; z-index: 2; }
+      .customer-check-badge { position: absolute; top: -2px; right: -2px; width: 21px; height: 21px; border-radius: 9999px; background: var(--color-primary, #059669); color: #fff; border: 2px solid var(--color-surface, #fff); display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: 800; z-index: 2; }
       .top-header { background: radial-gradient(ellipse 60% 120% at 15% 50%, rgba(217,119,6,0.16), transparent 65%), linear-gradient(180deg, #09090b 0%, #141418 55%, #0c0a09 100%) !important; border-bottom: 1px solid rgba(245,158,11,0.35) !important; box-shadow: 0 8px 28px -6px rgba(0,0,0,0.55); }
       .brand-zone span, .cinematic-jackal-title { font-family: 'Cinzel', Georgia, serif !important; font-size: 1.75rem !important; font-weight: 900 !important; letter-spacing: 0.08em; font-variant-caps: small-caps; line-height: 1.05; background-image: repeating-linear-gradient(125deg, rgba(255,255,255,0.22) 0px, rgba(255,255,255,0.22) 1px, rgba(69,26,3,0.14) 1px, rgba(69,26,3,0.14) 3px), linear-gradient(180deg, #fffbeb 0%, #fde047 18%, #eab308 42%, #a16207 52%, #facc15 74%, #fef08a 88%, #b45309 100%) !important; -webkit-background-clip: text !important; background-clip: text !important; color: transparent !important; -webkit-text-fill-color: transparent !important; filter: drop-shadow(0 1px 0 rgba(69,26,3,0.95)) drop-shadow(0 4px 10px rgba(0,0,0,0.78)); }
       .top-header .nav-item { color: #cbd5e1; }
       .top-header .nav-item.active { color: #fcd34d; border-bottom-color: #f59e0b; }
       .top-header .btn-outline { background-color: rgba(24,24,27,0.92); color: #fef3c7; border-color: rgba(245,158,11,0.32); }
-      .product-card-title { font-size: 1.25rem !important; font-weight: 800 !important; line-height: 1.3 !important; }
+      .product-grid { display: grid !important; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)) !important; gap: 8px !important; }
+      .product-card { padding: 9px 11px !important; gap: 7px !important; border-radius: 12px !important; }
+      .product-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 6px; }
+      .product-card-title { font-size: 0.96rem !important; font-weight: 800 !important; line-height: 1.25 !important; }
+      .product-card-add { font-size: 0.9rem; font-weight: 800; color: var(--color-text-subtle); flex-shrink: 0; }
+      .product-card-meta { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; padding-top: 6px; border-top: 1px solid var(--color-border, #e2e8f0); }
+      .product-card-price { font-weight: 800; font-size: 0.96rem; color: var(--color-primary, #059669); font-variant-numeric: tabular-nums; }
+      .product-card-price small { font-size: 0.76rem; color: var(--color-text-subtle); }
+      .product-card-stock { font-size: 0.8rem; font-weight: 700; color: var(--color-text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .product-card-stock.low { color: #d97706; }
+      @media (max-width: 600px) {
+        .customer-grid { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; gap: 12px 6px !important; }
+        .customer-avatar-ring { width: 58px; height: 58px; }
+        .product-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 7px !important; }
+      }
     `;
     document.head.appendChild(styleEl);
   }
