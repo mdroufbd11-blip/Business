@@ -396,35 +396,125 @@ async function deleteProductFromDb(prodId) {
   try { await supabaseClient.from('products').delete().eq('id', prodId); } catch (e) {}
 }
 
+function generateFallbackUuid() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+async function resolveNextFallbackSaleId() {
+  if (!supabaseClient) return generateFallbackUuid();
+  try {
+    const { data } = await supabaseClient.from('sales').select('id').limit(100);
+    if (Array.isArray(data) && data.length > 0) {
+      const numericIds = data
+        .map((r) => r.id)
+        .filter((v) => typeof v === 'number' || (typeof v === 'string' && /^\d+$/.test(v.trim())))
+        .map((v) => Number(v))
+        .filter((n) => Number.isFinite(n));
+      if (numericIds.length > 0 && numericIds.length === data.length) {
+        return Math.max(...numericIds) + 1;
+      }
+    }
+  } catch (e) {}
+  return generateFallbackUuid();
+}
+
 async function insertSaleToDb(saleRecord) {
   if (!supabaseClient) {
     saveJsonStorage(STORAGE_KEYS.SALES, [saleRecord, ...state.sales]);
-    return { ok: true, localOnly: true };
+    return { ok: true, localOnly: true, sale: saleRecord };
   }
   const totalQty = (saleRecord.items || []).reduce((s, it) => s + Number(it.quantity || 0), 0);
   const summaryNames = (saleRecord.items || []).map((it) => `${cleanProductTitle(it.productName)} (${it.quantity} ${it.unit})`).join(', ');
-  const extendedPayload = Object.assign({}, saleRecord, {
+
+  // Strip client-side `id` so Supabase DB default (gen_random_uuid() / identity) assigns a unique PK
+  const corePayload = {
+    memoNo: saleRecord.memoNo,
+    customerName: saleRecord.customerName,
+    customerPhone: saleRecord.customerPhone || '',
+    items: saleRecord.items,
+    totalAmount: saleRecord.totalAmount,
+    totalCost: saleRecord.totalCost,
+    profit: saleRecord.profit,
+    discount: saleRecord.discount,
+    netPayable: saleRecord.netPayable,
+    paidAmount: saleRecord.paidAmount,
+    dueAmount: saleRecord.dueAmount,
+    paymentMethod: saleRecord.paymentMethod,
+    date: saleRecord.date,
+    note: saleRecord.note || '',
+  };
+
+  const extendedPayload = Object.assign({}, corePayload, {
     phone: saleRecord.customerPhone || '',
     quantity: Number(totalQty.toFixed(2)),
     productName: summaryNames,
   });
 
   try {
-    const res = await supabaseClient.from('sales').insert([extendedPayload]).select();
+    let activePayload = extendedPayload;
+    let res = await supabaseClient.from('sales').insert([activePayload]).select();
     if (res.error) {
-      const msg = res.error.message || '';
-      if (res.error.code === 'PGRST204' || res.error.code === '42703' || msg.toLowerCase().includes('column')) {
-        const retry = await supabaseClient.from('sales').insert([saleRecord]).select();
-        if (retry.error) return { ok: false, error: retry.error.message };
-        state.syncMode = 'supabase';
-        return { ok: true };
+      const msg = (res.error.message || '').toLowerCase();
+      if (res.error.code === 'PGRST204' || res.error.code === '42703' || msg.includes('column')) {
+        activePayload = corePayload;
+        res = await supabaseClient.from('sales').insert([activePayload]).select();
       }
-      return { ok: false, error: msg };
     }
+
+    if (res.error) {
+      const errCode = res.error.code || '';
+      const errMsg = (res.error.message || '').toLowerCase();
+      const isPkOrNullIdIssue =
+        errCode === '23505' ||
+        errCode === '23502' ||
+        errMsg.includes('duplicate key') ||
+        errMsg.includes('sales_pkey') ||
+        errMsg.includes('null value in column "id"');
+
+      if (isPkOrNullIdIssue) {
+        const fallbackId = await resolveNextFallbackSaleId();
+        res = await supabaseClient.from('sales').insert([Object.assign({}, activePayload, { id: fallbackId })]).select();
+        if (res.error && res.error.code === '23505') {
+          const secondId = typeof fallbackId === 'number' ? fallbackId + 1 : generateFallbackUuid();
+          res = await supabaseClient.from('sales').insert([Object.assign({}, activePayload, { id: secondId })]).select();
+        }
+      }
+    }
+
+    if (res.error) {
+      const errCode = res.error.code || '';
+      const errMsg = (res.error.message || '').toLowerCase();
+      if (errCode === '23505' || errMsg.includes('sales_pkey')) {
+        try {
+          const { data: dupCust } = await supabaseClient
+            .from('sales')
+            .select('id')
+            .eq('customerName', saleRecord.customerName)
+            .limit(1);
+          if (Array.isArray(dupCust) && dupCust.length > 0) {
+            return {
+              ok: false,
+              error: `Supabase sales টেবিলে "customerName" কলামে Primary Key ("Sales_pkey") রয়েছে, তাই "${saleRecord.customerName}"-এর নতুন বিক্রি আটকে যাচ্ছে। Supabase SQL Editor-এ Run করুন: ALTER TABLE public.sales DROP CONSTRAINT IF EXISTS "Sales_pkey"; ALTER TABLE public.sales ALTER COLUMN id SET DEFAULT gen_random_uuid()::text; ALTER TABLE public.sales ADD PRIMARY KEY (id);`,
+            };
+          }
+        } catch (e) {}
+      }
+      return { ok: false, error: res.error.message || 'Supabase insert error' };
+    }
+
     state.syncMode = 'supabase';
-    return { ok: true };
+    state.syncMessage = '';
+    const insertedRow = Array.isArray(res.data) && res.data.length > 0 ? normalizeSale(res.data[0]) : saleRecord;
+    return { ok: true, sale: insertedRow };
   } catch (err) {
-    return { ok: false, error: err.message || 'Network error' };
+    return { ok: false, error: (err && err.message) || 'Network error' };
   }
 }
 
@@ -435,7 +525,8 @@ async function deleteSaleFromDb(saleId) {
 }
 
 function generateMemoNo() {
-  return `MEMO-${String(state.sales.length + 101).padStart(4, '0')}-${Date.now().toString(36).slice(-4).toUpperCase()}`;
+  const rand = Math.random().toString(36).slice(2, 5).toUpperCase();
+  return `MEMO-${String(state.sales.length + 101).padStart(4, '0')}-${Date.now().toString(36).slice(-4).toUpperCase()}${rand}`;
 }
 
 // ----------------- AVATAR & IMAGE HELPERS -----------------
@@ -1052,7 +1143,7 @@ window.handlePosSubmit = async function(e) {
   const profit = netPayable - totalCost;
 
   const saleRecord = {
-    id: `sale_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    id: generateFallbackUuid(),
     memoNo: generateMemoNo(),
     customerName,
     customerPhone,
@@ -1070,36 +1161,45 @@ window.handlePosSubmit = async function(e) {
   };
 
   state.isSubmitting = true;
+  document.querySelectorAll('#pos-sale-form button[type="submit"], #pos-calculations-box button[type="button"]').forEach((btn) => {
+    btn.disabled = true;
+  });
   updatePosCalculations();
 
-  const insertRes = await insertSaleToDb(saleRecord);
-  state.isSubmitting = false;
+  let pendingInvoiceId = null;
+  try {
+    const insertRes = await insertSaleToDb(saleRecord);
 
-  if (!insertRes.ok) {
-    state.syncMessage = insertRes.error || 'Supabase insert error';
-    showToast(`${isBn ? 'বিক্রি সংরক্ষণ ব্যর্থ:' : 'Save failed:'} ${state.syncMessage}`, 'error');
-    render();
-    return;
-  }
-
-  for (const sold of saleItems) {
-    const pObj = state.products.find((p) => p.id === sold.productId);
-    if (pObj) {
-      pObj.stock = Math.max(0, Number((pObj.stock - sold.quantity).toFixed(2)));
-      await updateProductStockInDb(pObj.id, pObj.stock);
+    if (!insertRes.ok) {
+      state.syncMessage = insertRes.error || 'Supabase insert error';
+      showToast(`${isBn ? 'বিক্রি সংরক্ষণ ব্যর্থ:' : 'Save failed:'} ${state.syncMessage}`, 'error');
+      return;
     }
+
+    const savedSale = insertRes.sale || saleRecord;
+
+    for (const sold of saleItems) {
+      const pObj = state.products.find((p) => p.id === sold.productId);
+      if (pObj) {
+        pObj.stock = Math.max(0, Number((pObj.stock - sold.quantity).toFixed(2)));
+        await updateProductStockInDb(pObj.id, pObj.stock);
+      }
+    }
+
+    state.sales.unshift(savedSale);
+    saveJsonStorage(STORAGE_KEYS.SALES, state.sales);
+    state.cart = [];
+    state.posDiscount = 0;
+    state.posPaidAmount = '';
+    state.posNote = '';
+
+    showToast(`${isBn ? 'বিক্রি সফল হয়েছে!' : 'Sale confirmed!'} (${savedSale.memoNo})`, 'success');
+    pendingInvoiceId = savedSale.id;
+  } finally {
+    state.isSubmitting = false;
+    render();
+    if (pendingInvoiceId) showInvoiceModal(pendingInvoiceId);
   }
-
-  state.sales.unshift(saleRecord);
-  saveJsonStorage(STORAGE_KEYS.SALES, state.sales);
-  state.cart = [];
-  state.posDiscount = 0;
-  state.posPaidAmount = '';
-  state.posNote = '';
-
-  showToast(`${isBn ? 'বিক্রি সফল হয়েছে!' : 'Sale confirmed!'} (${saleRecord.memoNo})`, 'success');
-  render();
-  showInvoiceModal(saleRecord.id);
 };
 
 // ----------------- 2. PRODUCTS MANAGEMENT VIEW -----------------
