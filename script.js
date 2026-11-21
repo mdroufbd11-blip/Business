@@ -768,7 +768,7 @@ async function uploadImageToSupabaseStorage(file, folder, recordKey) {
     .slice(0, 40) || 'item';
   const prepared = await compressImageToBlob(file, 800);
   if (!prepared.blob) return { ok: false, error: 'ছবি প্রক্রিয়াকরণ ব্যর্থ হয়েছে।' };
-  const filePath = {safeKey}_{Date.now().jpg;
+  const filePath = `${folder}/${safeKey}_${Date.now()}.${prepared.ext}`;
   try {
     const { error } = await supabaseClient.storage
       .from(SUPABASE_STORAGE_BUCKET)
