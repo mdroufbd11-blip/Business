@@ -12,6 +12,14 @@
 const SUPABASE_URL = 'https://mbjgvsivtkavpvtqwhsb.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_satWtSpdLxBaJ2FgXY3GJg_co5w-3ZD';
 const SUPABASE_STORAGE_BUCKET = '01';
+const STORAGE_RLS_FIX_SQL = [
+  "INSERT INTO storage.buckets (id, name, public) VALUES ('01', '01', true) ON CONFLICT (id) DO UPDATE SET public = true;",
+  'DROP POLICY IF EXISTS "Public read bucket 01" ON storage.objects;',
+  'DROP POLICY IF EXISTS "Public insert bucket 01" ON storage.objects;',
+  'DROP POLICY IF EXISTS "Public update bucket 01" ON storage.objects;',
+  'DROP POLICY IF EXISTS "Allow all bucket 01" ON storage.objects;',
+  'CREATE POLICY "Allow all bucket 01" ON storage.objects FOR ALL TO anon, authenticated, public USING (bucket_id = \'01\') WITH CHECK (bucket_id = \'01\');',
+].join('\n');
 
 function normalizeImageUrl(val) {
   if (typeof val !== 'string') return '';
@@ -290,6 +298,8 @@ const state = {
   isSubmitting: false,
   syncMode: 'connecting',
   syncMessage: '',
+  storageRlsBlocked: false,
+  storageRlsDismissed: false,
 };
 
 // ----------------- THEME, TYPOGRAPHY & TOAST -----------------
@@ -436,8 +446,33 @@ window.loadState = async function() {
       state.syncMode = 'local';
       state.syncMessage = errObj.message || 'Supabase fetch error';
     } else {
-      state.products = (prodRes.data || []).map(normalizeProduct).sort((a, b) => a.id - b.id);
-      state.sales = (salesRes.data || []).map(normalizeSale);
+      const cachedProdImgMap = {};
+      fallbackProducts.forEach((fp) => {
+        const img = normalizeImageUrl(fp.Image);
+        if (fp.id && img) cachedProdImgMap[String(fp.id)] = img;
+      });
+      const cachedSaleImgMap = {};
+      fallbackSales.forEach((fs) => {
+        const img = normalizeImageUrl(fs.Image);
+        if (fs.id && img) cachedSaleImgMap[String(fs.id)] = img;
+      });
+
+      state.products = (prodRes.data || [])
+        .map((row) => {
+          const p = normalizeProduct(row);
+          if (!normalizeImageUrl(p.Image) && cachedProdImgMap[String(p.id)]) {
+            p.Image = cachedProdImgMap[String(p.id)];
+          }
+          return p;
+        })
+        .sort((a, b) => a.id - b.id);
+      state.sales = (salesRes.data || []).map((row) => {
+        const s = normalizeSale(row);
+        if (!normalizeImageUrl(s.Image) && cachedSaleImgMap[String(s.id)]) {
+          s.Image = cachedSaleImgMap[String(s.id)];
+        }
+        return s;
+      });
       syncCustomerImagesFromSales();
       state.syncMode = 'supabase';
       state.syncMessage = '';
@@ -757,17 +792,72 @@ function compressImageToBlob(file, maxSize) {
   });
 }
 
+function compressImageToDataUrl(file, maxSize, quality) {
+  return new Promise((resolve) => {
+    if (!file) { resolve(''); return; }
+    const targetMax = maxSize || 320;
+    const targetQuality = typeof quality === 'number' ? quality : 0.78;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const rawDataUrl = typeof reader.result === 'string' ? reader.result : '';
+      if (!rawDataUrl) { resolve(''); return; }
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let w = img.width || targetMax;
+        let h = img.height || targetMax;
+        if (w > h && w > targetMax) { h = Math.round((h * targetMax) / w); w = targetMax; }
+        else if (h >= w && h > targetMax) { w = Math.round((w * targetMax) / h); h = targetMax; }
+        canvas.width = Math.max(1, w);
+        canvas.height = Math.max(1, h);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { resolve(rawDataUrl); return; }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        try {
+          const out = canvas.toDataURL('image/jpeg', targetQuality);
+          resolve(out || rawDataUrl);
+        } catch (e) {
+          resolve(rawDataUrl);
+        }
+      };
+      img.onerror = () => resolve(rawDataUrl);
+      img.src = rawDataUrl;
+    };
+    reader.onerror = () => resolve('');
+    reader.readAsDataURL(file);
+  });
+}
+
+async function fallbackCompressForDb(file, bucketName, errMsg) {
+  var compactUrl = await compressImageToDataUrl(file, 320, 0.78);
+  if (!compactUrl) {
+    return {
+      ok: false,
+      error: 'Storage আপলোড ব্যর্থ (Bucket "' + bucketName + '"): ' + errMsg,
+    };
+  }
+  state.storageRlsBlocked = true;
+  state.storageRlsDismissed = false;
+  return {
+    ok: true,
+    publicUrl: compactUrl,
+    storageFallback: true,
+    storageError: errMsg,
+  };
+}
+
 async function uploadImageToSupabaseStorage(file, folder, recordKey) {
   if (!file) {
     return { ok: false, error: 'কোনো ছবি ফাইল নির্বাচন করা হয়নি।' };
-  }
-  if (!supabaseClient || !supabaseClient.storage) {
-    return { ok: false, error: 'Supabase Storage সংযোগ পাওয়া যায়নি।' };
   }
 
   var bucketName = (typeof SUPABASE_STORAGE_BUCKET === 'string' && SUPABASE_STORAGE_BUCKET.trim())
     ? SUPABASE_STORAGE_BUCKET.trim()
     : '01';
+
+  if (!supabaseClient || !supabaseClient.storage) {
+    return fallbackCompressForDb(file, bucketName, 'Supabase Storage সংযোগ পাওয়া যায়নি');
+  }
 
   var rawKey = String(recordKey || 'item').replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
   var safeKey = (rawKey || 'item').slice(0, 36);
@@ -775,7 +865,7 @@ async function uploadImageToSupabaseStorage(file, folder, recordKey) {
 
   var prepared = await compressImageToBlob(file, 800);
   if (!prepared || !prepared.blob) {
-    return { ok: false, error: 'ছবি প্রক্রিয়াকরণ ব্যর্থ হয়েছে।' };
+    return fallbackCompressForDb(file, bucketName, 'ছবি প্রক্রিয়াকরণ ব্যর্থ হয়েছে');
   }
 
   var ext = String(prepared.ext || 'jpg').replace(/[^a-zA-Z0-9]/g, '') || 'jpg';
@@ -816,18 +906,21 @@ async function uploadImageToSupabaseStorage(file, folder, recordKey) {
 
     if (uploadRes.error) {
       var errMsg = uploadRes.error.message || 'Unknown storage error';
+      var statusStr = String(uploadRes.error.statusCode || uploadRes.error.status || '');
       var lowerMsg = errMsg.toLowerCase();
-      if (lowerMsg.indexOf('row-level security') !== -1 || lowerMsg.indexOf('policy') !== -1) {
-        return {
-          ok: false,
-          error: 'Storage RLS পলিসি ব্লক করেছে (Bucket "' + bucketName + '")। SQL Editor-এ storage.objects-এর INSERT/SELECT পলিসি চালু করুন: ' + errMsg,
-        };
-      }
-      if (lowerMsg.indexOf('bucket') !== -1 && lowerMsg.indexOf('not found') !== -1) {
-        return {
-          ok: false,
-          error: 'Supabase Storage-এ "' + bucketName + '" নামের Public Bucket তৈরি করা নেই।',
-        };
+      var shouldFallback =
+        lowerMsg.indexOf('row-level security') !== -1 ||
+        lowerMsg.indexOf('policy') !== -1 ||
+        lowerMsg.indexOf('unauthorized') !== -1 ||
+        lowerMsg.indexOf('permission') !== -1 ||
+        lowerMsg.indexOf('bucket') !== -1 ||
+        statusStr === '403' ||
+        statusStr === '401' ||
+        statusStr === '400' ||
+        statusStr === '404';
+
+      if (shouldFallback) {
+        return fallbackCompressForDb(file, bucketName, errMsg);
       }
       return {
         ok: false,
@@ -838,11 +931,13 @@ async function uploadImageToSupabaseStorage(file, folder, recordKey) {
     var pubRes = supabaseClient.storage.from(bucketName).getPublicUrl(filePath);
     var publicUrl = normalizeImageUrl(pubRes && pubRes.data ? pubRes.data.publicUrl : '');
     if (!publicUrl) {
-      return { ok: false, error: 'পাবলিক URL তৈরি করা যায়নি।' };
+      return fallbackCompressForDb(file, bucketName, 'পাবলিক URL তৈরি করা যায়নি');
     }
+    state.storageRlsBlocked = false;
     return { ok: true, publicUrl: publicUrl };
   } catch (err) {
-    return { ok: false, error: (err && err.message) ? err.message : 'Storage network error' };
+    var exMsg = (err && err.message) ? err.message : 'Storage network error';
+    return fallbackCompressForDb(file, bucketName, exMsg);
   }
 }
 
@@ -955,13 +1050,46 @@ function updateFooterSyncStatus() {
   footer.textContent = `${isBn ? 'মুদ্রা: ৳ (টাকা)' : 'Currency: ৳ (BDT)'} · ${state.products.length} ${isBn ? 'টি পণ্য' : 'products'} · ${syncText}`;
 }
 
-function renderSyncNoticeBanner() {
-  if (state.syncMode !== 'local' || !state.syncMessage) return '';
+window.copyStorageRlsSql = function() {
   const isBn = state.lang === 'bn';
-  return `<div class="sync-banner">
-    <div><strong>${isBn ? 'লোকাল ব্যাকআপ মোড:' : 'Local Backup Mode:'}</strong> <span>${esc(state.syncMessage)}</span></div>
-    <button type="button" class="btn btn-outline btn-sm" onclick="loadState()">🔄 ${isBn ? 'আবার সিঙ্ক করুন' : 'Retry Sync'}</button>
-  </div>`;
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    navigator.clipboard.writeText(STORAGE_RLS_FIX_SQL).then(() => {
+      showToast(isBn ? 'Storage RLS SQL কপি হয়েছে! Supabase SQL Editor-এ পেস্ট করে Run করুন।' : 'Storage RLS SQL copied!', 'success');
+    }).catch(() => {
+      showToast(isBn ? 'SQL কপি করা যায়নি, standalone/supabase_schema.sql থেকে নিন।' : 'Copy failed.', 'info');
+    });
+  } else {
+    showToast(isBn ? 'standalone/supabase_schema.sql ফাইলের Section 5 SQL কপি করুন।' : 'Check standalone/supabase_schema.sql', 'info');
+  }
+};
+
+window.dismissStorageRlsBanner = function() {
+  state.storageRlsDismissed = true;
+  render();
+};
+
+function renderSyncNoticeBanner() {
+  const isBn = state.lang === 'bn';
+  let html = '';
+  if (state.syncMode === 'local' && state.syncMessage) {
+    html += `<div class="sync-banner">
+      <div><strong>${isBn ? 'লোকাল ব্যাকআপ মোড:' : 'Local Backup Mode:'}</strong> <span>${esc(state.syncMessage)}</span></div>
+      <button type="button" class="btn btn-outline btn-sm" onclick="loadState()">🔄 ${isBn ? 'আবার সিঙ্ক করুন' : 'Retry Sync'}</button>
+    </div>`;
+  }
+  if (state.storageRlsBlocked && !state.storageRlsDismissed) {
+    html += `<div class="sync-banner" style="background:var(--color-warning-light, #fffbeb); border-color:var(--color-warning, #f59e0b);">
+      <div style="flex:1; min-width:220px;">
+        <strong>${isBn ? 'Bucket "01" RLS সীমাবদ্ধতা (স্বয়ংক্রিয় ব্যাকআপ চালু):' : 'Bucket "01" RLS Restricted (Auto-Saved Directly):'}</strong>
+        <span>${isBn ? 'ছবি সরাসরি ডাটাবেজে সংরক্ষণ করা হয়েছে। Bucket "01"-এ সরাসরি আপলোড চালু করতে SQL Editor-এ Storage RLS পলিসি রান করুন।' : 'Photo saved directly in database. Run the Storage RLS policy in SQL Editor to enable Bucket "01" uploads.'}</span>
+      </div>
+      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+        <button type="button" class="btn btn-primary btn-sm" onclick="copyStorageRlsSql()">📋 ${isBn ? 'SQL কপি করুন' : 'Copy SQL'}</button>
+        <button type="button" class="btn btn-outline btn-sm" onclick="dismissStorageRlsBanner()">✕ ${isBn ? 'লুকান' : 'Hide'}</button>
+      </div>
+    </div>`;
+  }
+  return html;
 }
 
 window.render = function() {
@@ -1290,7 +1418,11 @@ window.handleNewCustomerPhotoUpload = async function(inputEl) {
   state.newCustomerUploading = false;
   if (res.ok && res.publicUrl) {
     state.newCustomerPhotoUrl = res.publicUrl;
-    showToast(state.lang === 'bn' ? 'গ্রাহকের ছবি Bucket 01-এ আপলোড হয়েছে!' : 'Photo uploaded to bucket 01!', 'success');
+    if (res.storageFallback) {
+      showToast(state.lang === 'bn' ? 'Storage RLS সীমাবদ্ধতার কারণে ছবি সরাসরি ডাটাবেজে সংরক্ষণ করা হয়েছে!' : 'Saved photo directly in database (Storage RLS restricted)!', 'info');
+    } else {
+      showToast(state.lang === 'bn' ? 'গ্রাহকের ছবি Bucket 01-এ আপলোড হয়েছে!' : 'Photo uploaded to bucket 01!', 'success');
+    }
   } else {
     showToast(res.error || 'Upload failed', 'error');
   }
@@ -1315,9 +1447,15 @@ window.uploadSelectedBannerCustomerPhoto = async function(inputEl) {
     }
     const dbRes = await updateCustomerSalesImageInDb(cName, res.publicUrl);
     if (!dbRes.ok) {
-      showToast(`${cName}-এর ছবি আপলোড হয়েছে, তবে sales টেবিলে সেভ হয়নি: ${dbRes.error}`, 'error');
+      showToast(`${cName}-এর ছবি প্রস্তুত হয়েছে (লোকালে সেভ হয়েছে), তবে sales টেবিলে সেভ হয়নি: ${dbRes.error}`, 'error');
+    } else if (res.storageFallback) {
+      showToast(`${cName}-এর ছবি সরাসরি ডাটাবেজে সংরক্ষণ করা হয়েছে! (Storage RLS সক্রিয় করুন)`, 'info');
     } else {
       showToast(`${cName}-এর ছবি সফলভাবে আপডেট হয়েছে!`, 'success');
+    }
+    if (res.storageFallback) {
+      render();
+      return;
     }
     const grid = document.getElementById('pos-customer-grid');
     if (grid) grid.innerHTML = renderCustomerGridHtml();
@@ -1779,11 +1917,17 @@ window.uploadQuickProductPhoto = async function(prodId, inputEl) {
   prod.Image = upRes.publicUrl;
   const dbRes = await updateProductImageInDb(prodId, upRes.publicUrl);
   if (!dbRes.ok) {
-    showToast(`ছবি আপলোড হয়েছে, তবে ডাটাবেজে সেভ হয়নি: ${dbRes.error}`, 'error');
+    showToast(`ছবি লোকালে সংরক্ষণ হয়েছে, তবে products টেবিলে সেভ হয়নি: ${dbRes.error}`, 'error');
+  } else if (upRes.storageFallback) {
+    showToast(`${cleanProductTitle(prod.name)}-এর ছবি সরাসরি ডাটাবেজে সংরক্ষণ হয়েছে!`, 'info');
   } else {
     showToast(`${cleanProductTitle(prod.name)}-এর ছবি আপলোড ও সেভ হয়েছে!`, 'success');
   }
-  renderProductsTableOnly();
+  if (upRes.storageFallback) {
+    render();
+  } else {
+    renderProductsTableOnly();
+  }
 };
 
 window.renderProductsTableOnly = function() {
@@ -2183,7 +2327,11 @@ window.handleModalProductImageUpload = async function(inputEl) {
     state.modalProductImage = res.publicUrl;
     const urlInput = document.getElementById('modal-prod-image-url');
     if (urlInput) urlInput.value = res.publicUrl;
-    showToast(state.lang === 'bn' ? 'পণ্যের ছবি Bucket 01-এ আপলোড হয়েছে!' : 'Product photo uploaded!', 'success');
+    if (res.storageFallback) {
+      showToast(state.lang === 'bn' ? 'Storage RLS সীমাবদ্ধতার কারণে ছবি সরাসরি ডাটাবেজের জন্য প্রস্তুত হয়েছে!' : 'Image prepared directly for database!', 'info');
+    } else {
+      showToast(state.lang === 'bn' ? 'পণ্যের ছবি Bucket 01-এ আপলোড হয়েছে!' : 'Product photo uploaded!', 'success');
+    }
   } else {
     showToast(res.error || 'Upload failed', 'error');
   }
@@ -2324,7 +2472,9 @@ window.uploadCustomerPhoto = async function(custId, inputEl) {
   saveJsonStorage(STORAGE_KEYS.CUSTOMERS, state.customers);
   const dbRes = await updateCustomerSalesImageInDb(cust.name, res.publicUrl);
   if (!dbRes.ok) {
-    showToast(`${cust.name}-এর ছবি Bucket 01-এ আপলোড হয়েছে, তবে sales টেবিলে সেভ হয়নি: ${dbRes.error}`, 'error');
+    showToast(`${cust.name}-এর ছবি লোকালে সংরক্ষণ হয়েছে, তবে sales টেবিলে সেভ হয়নি: ${dbRes.error}`, 'error');
+  } else if (res.storageFallback) {
+    showToast(`${cust.name}-এর ছবি সরাসরি ডাটাবেজে সংরক্ষণ হয়েছে!`, 'info');
   } else {
     showToast(`${cust.name}-এর ছবি Bucket 01 ও sales.Image-এ আপডেট হয়েছে!`, 'success');
   }
