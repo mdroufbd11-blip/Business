@@ -11,6 +11,14 @@
 
 const SUPABASE_URL = 'https://mbjgvsivtkavpvtqwhsb.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_satWtSpdLxBaJ2FgXY3GJg_co5w-3ZD';
+const SUPABASE_STORAGE_BUCKET = '01';
+
+function normalizeImageUrl(val) {
+  if (typeof val !== 'string') return '';
+  const trimmed = val.trim();
+  if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return '';
+  return trimmed;
+}
 
 let supabaseClient = null;
 try {
@@ -272,6 +280,12 @@ const state = {
   analyticsCustRange: '30d',
   analyticsCustDate: getLocalDateKey(),
   editingProductId: null,
+  modalProductImage: '',
+  modalProductUploading: false,
+  newCustomerPhotoUrl: '',
+  newCustomerUploading: false,
+  uploadingCustomerId: null,
+  uploadingProductId: null,
   isLoading: true,
   isSubmitting: false,
   syncMode: 'connecting',
@@ -345,6 +359,7 @@ function normalizeProduct(raw) {
     unit: String(raw.unit || 'পিস'),
     stock: Number(raw.stock ?? 0),
     minStockAlert: Number(raw.minStockAlert ?? raw.min_stock_alert ?? 15),
+    Image: normalizeImageUrl(raw.Image ?? raw.image),
   };
 }
 
@@ -366,6 +381,7 @@ function normalizeSale(raw) {
     memoNo: String(raw.memoNo ?? raw.memo_no ?? ('MEMO-' + String(raw.id).slice(-4))),
     customerName: String(raw.customerName ?? raw.customer_name ?? 'অজানা কাস্টমার'),
     customerPhone: String(raw.customerPhone ?? raw.customer_phone ?? raw.phone ?? ''),
+    Image: normalizeImageUrl(raw.Image ?? raw.image),
     items,
     totalAmount,
     totalCost,
@@ -422,6 +438,7 @@ window.loadState = async function() {
     } else {
       state.products = (prodRes.data || []).map(normalizeProduct).sort((a, b) => a.id - b.id);
       state.sales = (salesRes.data || []).map(normalizeSale);
+      syncCustomerImagesFromSales();
       state.syncMode = 'supabase';
       state.syncMessage = '';
       saveJsonStorage(STORAGE_KEYS.PRODUCTS, state.products);
@@ -430,6 +447,7 @@ window.loadState = async function() {
   } catch (err) {
     state.products = fallbackProducts.length > 0 ? fallbackProducts : JSON.parse(JSON.stringify(INITIAL_PRODUCTS));
     state.sales = fallbackSales;
+    syncCustomerImagesFromSales();
     state.syncMode = 'local';
     state.syncMessage = err && err.message ? err.message : 'Network error';
   }
@@ -438,16 +456,101 @@ window.loadState = async function() {
   render();
 };
 
+function syncCustomerImagesFromSales() {
+  const map = {};
+  (state.sales || []).forEach((s) => {
+    const key = String(s.customerName || '').trim();
+    const img = normalizeImageUrl(s.Image);
+    if (key && img && !map[key]) map[key] = img;
+  });
+  let changed = false;
+  state.customers = (state.customers || []).map((c) => {
+    const key = String(c.name || '').trim();
+    const fromSale = map[key];
+    if (fromSale && c.Image !== fromSale) {
+      changed = true;
+      return Object.assign({}, c, { Image: fromSale });
+    }
+    return c;
+  });
+  if (changed) saveJsonStorage(STORAGE_KEYS.CUSTOMERS, state.customers);
+}
+
+function getCustomerImageUrl(customerName, custObj) {
+  const c = custObj || (state.customers || []).find((cu) => cu.name === customerName);
+  const directCust = normalizeImageUrl(c && (c.Image || c.customPhoto));
+  const key = String(customerName || (c && c.name) || '').trim();
+  if (key) {
+    const foundSale = (state.sales || []).find((s) => String(s.customerName || '').trim() === key && normalizeImageUrl(s.Image));
+    if (foundSale) return normalizeImageUrl(foundSale.Image);
+  }
+  return directCust || '';
+}
+
+function getProductByTitle(title) {
+  const clean = cleanProductTitle(title);
+  return (state.products || []).find((p) => cleanProductTitle(p.name) === clean) || null;
+}
+
 async function saveProductToDb(product) {
   saveJsonStorage(STORAGE_KEYS.PRODUCTS, state.products);
   if (!supabaseClient) return { ok: false, error: 'Offline mode' };
   try {
-    const { error } = await supabaseClient.from('products').upsert([product]);
-    if (error) return { ok: false, error: error.message };
+    const payload = {
+      id: product.id,
+      name: product.name,
+      category: product.category,
+      buy_price: Number(product.buy_price) || 0,
+      sell_price: Number(product.sell_price) || 0,
+      unit: product.unit,
+      stock: Number(product.stock) || 0,
+      minStockAlert: Number(product.minStockAlert) || 15,
+      Image: normalizeImageUrl(product.Image) || null,
+    };
+    let res = await supabaseClient.from('products').upsert([payload]);
+    if (res.error) {
+      const msg = (res.error.message || '').toLowerCase();
+      if (res.error.code === 'PGRST204' || res.error.code === '42703' || msg.includes('image') || msg.includes('column')) {
+        const fallbackPayload = Object.assign({}, payload);
+        delete fallbackPayload.Image;
+        res = await supabaseClient.from('products').upsert([fallbackPayload]);
+      }
+    }
+    if (res.error) return { ok: false, error: res.error.message };
     state.syncMode = 'supabase';
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message || 'Network error' };
+  }
+}
+
+async function updateProductImageInDb(prodId, imageUrl) {
+  const cleanUrl = normalizeImageUrl(imageUrl) || null;
+  saveJsonStorage(STORAGE_KEYS.PRODUCTS, state.products);
+  if (!supabaseClient) return { ok: true, localOnly: true };
+  try {
+    const { error } = await supabaseClient.from('products').update({ Image: cleanUrl }).eq('id', prodId);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || 'Network error' };
+  }
+}
+
+async function updateCustomerSalesImageInDb(customerName, imageUrl) {
+  const cleanName = String(customerName || '').trim();
+  const cleanUrl = normalizeImageUrl(imageUrl) || null;
+  state.sales = (state.sales || []).map((s) =>
+    String(s.customerName || '').trim() === cleanName ? Object.assign({}, s, { Image: cleanUrl || '' }) : s
+  );
+  saveJsonStorage(STORAGE_KEYS.SALES, state.sales);
+  if (!supabaseClient || !cleanName) return { ok: true, localOnly: true };
+  try {
+    const { error } = await supabaseClient.from('sales').update({ Image: cleanUrl }).eq('customerName', cleanName);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || 'Network error' };
   }
 }
 
@@ -511,6 +614,7 @@ async function insertSaleToDb(saleRecord) {
     memoNo: saleRecord.memoNo,
     customerName: saleRecord.customerName,
     customerPhone: saleRecord.customerPhone || '',
+    Image: normalizeImageUrl(saleRecord.Image) || null,
     items: saleRecord.items,
     totalAmount: saleRecord.totalAmount,
     totalCost: saleRecord.totalCost,
@@ -538,6 +642,12 @@ async function insertSaleToDb(saleRecord) {
       if (res.error.code === 'PGRST204' || res.error.code === '42703' || msg.includes('column')) {
         activePayload = corePayload;
         res = await supabaseClient.from('sales').insert([activePayload]).select();
+        if (res.error && (res.error.code === 'PGRST204' || res.error.code === '42703' || (res.error.message || '').toLowerCase().includes('image'))) {
+          const minimalPayload = Object.assign({}, corePayload);
+          delete minimalPayload.Image;
+          activePayload = minimalPayload;
+          res = await supabaseClient.from('sales').insert([activePayload]).select();
+        }
       }
     }
 
@@ -602,42 +712,112 @@ function generateMemoNo() {
   return `MEMO-${String(state.sales.length + 101).padStart(4, '0')}-${Date.now().toString(36).slice(-4).toUpperCase()}${rand}`;
 }
 
-// ----------------- AVATAR & IMAGE HELPERS -----------------
-function compressImageFile(file, maxSize, callback) {
-  const reader = new FileReader();
-  reader.onload = () => {
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      let { width: w, height: h } = img;
-      if (w > h && w > maxSize) { h = Math.round((h * maxSize) / w); w = maxSize; }
-      else if (h >= w && h > maxSize) { w = Math.round((w * maxSize) / h); h = maxSize; }
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(img, 0, 0, w, h);
-        callback(canvas.toDataURL('image/jpeg', 0.82));
-      } else {
-        callback(reader.result);
-      }
+// ----------------- AVATAR, PRODUCT THUMBNAIL & SUPABASE STORAGE HELPERS -----------------
+window.handleImgFallbackError = function(imgEl) {
+  if (!imgEl) return;
+  imgEl.style.display = 'none';
+  const sibling = imgEl.nextElementSibling;
+  if (sibling) sibling.classList.remove('img-fallback-hidden');
+};
+
+function compressImageToBlob(file, maxSize) {
+  return new Promise((resolve) => {
+    if (!file) { resolve({ blob: null, ext: 'jpg', contentType: 'image/jpeg' }); return; }
+    if (file.type === 'image/svg+xml') {
+      resolve({ blob: file, ext: 'svg', contentType: 'image/svg+xml' });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let w = img.width || maxSize;
+        let h = img.height || maxSize;
+        if (w > h && w > maxSize) { h = Math.round((h * maxSize) / w); w = maxSize; }
+        else if (h >= w && h > maxSize) { w = Math.round((w * maxSize) / h); h = maxSize; }
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (ctx && typeof canvas.toBlob === 'function') {
+          ctx.drawImage(img, 0, 0, w, h);
+          canvas.toBlob((blob) => {
+            if (blob) resolve({ blob, ext: 'jpg', contentType: 'image/jpeg' });
+            else resolve({ blob: file, ext: 'jpg', contentType: file.type || 'image/jpeg' });
+          }, 'image/jpeg', 0.85);
+        } else {
+          resolve({ blob: file, ext: 'jpg', contentType: file.type || 'image/jpeg' });
+        }
+      };
+      img.onerror = () => resolve({ blob: file, ext: 'jpg', contentType: file.type || 'image/jpeg' });
+      img.src = reader.result;
     };
-    img.src = reader.result;
-  };
-  reader.readAsDataURL(file);
+    reader.onerror = () => resolve({ blob: file, ext: 'jpg', contentType: file.type || 'image/jpeg' });
+    reader.readAsDataURL(file);
+  });
 }
 
-function renderAvatarSvg(cust, sizePx) {
-  const c = cust || {};
-  const sizeStyle = sizePx ? `width:${sizePx}px; height:${sizePx}px;` : '';
-  if (c.customPhoto) {
-    return `<div class="customer-avatar-wrap" style="${sizeStyle}"><img src="${c.customPhoto}" alt="${esc(c.name)}" style="width:100%; height:100%; object-fit:cover;" /></div>`;
+async function uploadImageToSupabaseStorage(file, folder, recordKey) {
+  if (!file) return { ok: false, error: 'কোনো ছবি ফাইল নির্বাচন করা হয়নি।' };
+  if (!supabaseClient || !supabaseClient.storage) {
+    return { ok: false, error: 'Supabase Storage সংযোগ পাওয়া যায়নি।' };
   }
-  const skin = c.skinTone || '#d99b72';
-  const hair = c.hairColor || '#1e293b';
-  const shirt = c.shirtColor || '#059669';
-  return `<div class="customer-avatar-wrap" style="background:${shirt}33; ${sizeStyle}">
-    <svg viewBox="0 0 64 64" width="100%" height="100%">
+  const safeKey = String(recordKey || 'item')
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40) || 'item';
+  const prepared = await compressImageToBlob(file, 800);
+  if (!prepared.blob) return { ok: false, error: 'ছবি প্রক্রিয়াকরণ ব্যর্থ হয়েছে।' };
+  const filePath = `${folder}/${safeKey}_${Date.now()}.${prepared.ext}`;
+  try {
+    const { error } = await supabaseClient.storage
+      .from(SUPABASE_STORAGE_BUCKET)
+      .upload(filePath, prepared.blob, { cacheControl: '3600', upsert: true, contentType: prepared.contentType });
+    if (error) {
+      return {
+        ok: false,
+        error: `Storage আপলোড ব্যর্থ (Bucket "${SUPABASE_STORAGE_BUCKET}"): ${error.message}`,
+      };
+    }
+    const { data } = supabaseClient.storage.from(SUPABASE_STORAGE_BUCKET).getPublicUrl(filePath);
+    const publicUrl = normalizeImageUrl(data && data.publicUrl);
+    if (!publicUrl) return { ok: false, error: 'পাবলিক URL তৈরি করা যায়নি।' };
+    return { ok: true, publicUrl };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || 'Storage network error' };
+  }
+}
+
+const AVATAR_GRADIENTS = [
+  'linear-gradient(135deg, #059669, #0d9488)',
+  'linear-gradient(135deg, #4f46e5, #2563eb)',
+  'linear-gradient(135deg, #d97706, #ea580c)',
+  'linear-gradient(135deg, #e11d48, #db2777)',
+  'linear-gradient(135deg, #7c3aed, #6366f1)',
+  'linear-gradient(135deg, #0891b2, #0284c7)',
+];
+
+function getAvatarGradient(name) {
+  const s = String(name || 'গ');
+  let hash = 0;
+  for (let i = 0; i < s.length; i += 1) hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
+  return AVATAR_GRADIENTS[hash % AVATAR_GRADIENTS.length];
+}
+
+function getCustomerInitials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return 'গ';
+  if (parts.length === 1) return parts[0].slice(0, 2);
+  return (parts[0][0] || '') + (parts[parts.length - 1][0] || '');
+}
+
+function buildAvatarFallbackContent(c, displayName, hidden, sizePx) {
+  const hiddenCls = hidden ? ' img-fallback-hidden' : '';
+  if (c && c.skinTone) {
+    const skin = c.skinTone || '#d99b72';
+    const hair = c.hairColor || '#1e293b';
+    const shirt = c.shirtColor || '#059669';
+    return `<svg class="${hiddenCls.trim()}" viewBox="0 0 64 64" width="100%" height="100%" style="background:${shirt}33; display:block;">
       <circle cx="32" cy="32" r="32" fill="${shirt}" opacity="0.22" />
       <path d="M10 64 C10 48, 20 43, 32 43 C44 43, 54 48, 54 64 Z" fill="${shirt}" />
       <rect x="27" y="36" width="10" height="10" rx="4" fill="${skin}" />
@@ -650,7 +830,61 @@ function renderAvatarSvg(cust, sizePx) {
       ${c.hasGlasses ? '<g stroke="#0f172a" stroke-width="1.5" fill="rgba(255,255,255,0.25)"><rect x="22" y="23.5" width="8.5" height="6" rx="2"/><rect x="33.5" y="23.5" width="8.5" height="6" rx="2"/><line x1="30.5" y1="26" x2="33.5" y2="26"/></g>' : ''}
       ${c.hasBeard ? `<path d="M20 28 C20 38, 26 42, 32 42 C38 42, 44 38, 44 28 C42 32, 38 35, 32 35 C26 35, 22 32, 20 28 Z" fill="${hair}" opacity="0.9" />` : ''}
       <path d="M28 33.5 Q32 36.5 36 33.5" fill="none" stroke="${c.hasBeard ? '#ffffff' : '#7c2d12'}" stroke-width="1.6" stroke-linecap="round" />
-    </svg>
+    </svg>`;
+  }
+  const fontPx = sizePx ? Math.max(11, Math.round(sizePx * 0.36)) : 16;
+  return `<div class="customer-initials-badge${hiddenCls}" style="background:${getAvatarGradient(displayName)}; font-size:${fontPx}px;">${esc(getCustomerInitials(displayName))}</div>`;
+}
+
+function renderAvatarSvg(cust, sizePx, overrideName, overrideImageUrl) {
+  const c = cust || {};
+  const displayName = overrideName || c.name || 'কাস্টমার';
+  const matchedCust = c.name ? c : (state.customers || []).find((cu) => cu.name === displayName);
+  const resolvedUrl = normalizeImageUrl(overrideImageUrl) || getCustomerImageUrl(displayName, matchedCust || c);
+  const sizeStyle = sizePx ? `width:${sizePx}px; height:${sizePx}px; flex-shrink:0;` : '';
+
+  if (resolvedUrl) {
+    return `<div class="customer-avatar-wrap" style="${sizeStyle}">
+      <img src="${esc(resolvedUrl)}" alt="${esc(displayName)}" loading="lazy" referrerpolicy="no-referrer" style="width:100%; height:100%; object-fit:cover; display:block;" onerror="handleImgFallbackError(this)" />
+      ${buildAvatarFallbackContent(matchedCust || c, displayName, true, sizePx)}
+    </div>`;
+  }
+  return `<div class="customer-avatar-wrap" style="${sizeStyle}">
+    ${buildAvatarFallbackContent(matchedCust || c, displayName, false, sizePx)}
+  </div>`;
+}
+
+function getCategoryFallbackSvg(category) {
+  const cat = String(category || '');
+  if (cat === 'ক্যারেট') {
+    return '<svg width="56%" height="56%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="9" y1="10" x2="9" y2="19"/><line x1="15" y1="10" x2="15" y2="19"/></svg>';
+  }
+  if (cat === 'কাগজ') {
+    return '<svg width="56%" height="56%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="14" y2="17"/></svg>';
+  }
+  if (cat.includes('বস্তা')) {
+    return '<svg width="56%" height="56%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7h12l1 13H5L6 7z"/><path d="M9 7V5a3 3 0 0 1 6 0v2"/></svg>';
+  }
+  return '<svg width="56%" height="56%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>';
+}
+
+function renderProductThumbHtml(prod, sizeClass, fallbackName, fallbackCat) {
+  const p = prod || (fallbackName ? getProductByTitle(fallbackName) : null);
+  const name = cleanProductTitle((p && p.name) || fallbackName || 'পণ্য');
+  const category = (p && p.category) || fallbackCat || '';
+  const imgUrl = normalizeImageUrl(p && p.Image);
+  const catCls = getCategoryCardClass(category);
+  const szCls = sizeClass || 'thumb-sm';
+  const iconSvg = getCategoryFallbackSvg(category);
+
+  if (imgUrl) {
+    return `<div class="product-thumb-wrap ${szCls}" title="${esc(name)}">
+      <img class="product-thumb-img" src="${esc(imgUrl)}" alt="${esc(name)}" loading="lazy" referrerpolicy="no-referrer" onerror="handleImgFallbackError(this)" />
+      <div class="product-thumb-fallback img-fallback-hidden ${catCls}">${iconSvg}</div>
+    </div>`;
+  }
+  return `<div class="product-thumb-wrap ${szCls}" title="${esc(name)}">
+    <div class="product-thumb-fallback ${catCls}">${iconSvg}</div>
   </div>`;
 }
 
@@ -742,7 +976,10 @@ function renderPosProductGridHtml() {
     const isLow = p.stock <= (p.minStockAlert || 15);
     return `<button type="button" class="product-card ${getCategoryCardClass(p.category)} ${inCartQty > 0 ? 'selected' : ''}" title="${esc(p.category)} — ${inCartQty > 0 ? (isBn ? 'কার্ট থেকে সরাতে আবার ক্লিক করুন' : 'Click again to remove') : (isBn ? 'কার্টে যোগ করতে ক্লিক করুন' : 'Click to add')}" onclick="toggleProductInCart(${p.id})">
       <div class="product-card-top">
-        <div class="product-card-title">${esc(cleanProductTitle(p.name))}</div>
+        <div style="display:flex; align-items:center; gap:8px; min-width:0; flex:1;">
+          ${renderProductThumbHtml(p, 'thumb-sm')}
+          <div class="product-card-title" style="min-width:0;">${esc(cleanProductTitle(p.name))}</div>
+        </div>
         ${inCartQty > 0 ? `<span class="in-cart-pill">✓ ${inCartQty}</span>` : '<span class="product-card-add">+</span>'}
       </div>
       <div class="product-card-meta">
@@ -829,14 +1066,25 @@ function renderDashboard(container) {
                   <input type="text" id="new-cust-shop" class="form-control" placeholder="${isBn ? 'দোকানের নাম (ঐচ্ছিক)' : 'Shop Name'}" />
                   <input type="text" id="new-cust-phone" class="form-control" placeholder="017xxxxxxxx" />
                 </div>
-                <button type="button" class="btn btn-primary btn-sm" onclick="saveNewCustomer()">${isBn ? 'গ্রাহক সংরক্ষণ ও সিলেক্ট' : 'Save & Select'}</button>
+                <div style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; justify-content:space-between;">
+                  <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <label class="btn btn-outline btn-sm" style="cursor:pointer;">
+                      📷 ${state.newCustomerUploading ? (isBn ? 'আপলোড হচ্ছে...' : 'Uploading...') : (isBn ? 'গ্রাহকের ছবি দিন (Bucket 01)' : 'Upload Photo')}
+                      <input type="file" id="new-cust-photo-file" accept="image/*" style="display:none" onchange="handleNewCustomerPhotoUpload(this)" />
+                    </label>
+                    ${state.newCustomerPhotoUrl ? `<span style="font-size:0.82rem; font-weight:700; color:var(--color-primary);">✓ ${isBn ? 'ছবি সংযুক্ত' : 'Photo attached'}</span>` : ''}
+                  </div>
+                  <button type="button" class="btn btn-primary btn-sm" ${state.newCustomerUploading ? 'disabled' : ''} onclick="saveNewCustomer()">${isBn ? 'গ্রাহক সংরক্ষণ ও সিলেক্ট' : 'Save & Select'}</button>
+                </div>
               </div>` : ''}
 
             <div id="pos-customer-grid" class="customer-grid">${renderCustomerGridHtml()}</div>
 
+            <div id="selected-customer-banner-wrap">${renderSelectedCustomerBannerHtml()}</div>
+
             <div class="grid-2 form-group">
-              <div><label class="form-label">${isBn ? 'কাস্টমারের নাম' : 'Customer Name'} *</label><input type="text" id="pos-customer-name" class="form-control" style="font-weight:700" value="${esc(state.posCustomerName)}" oninput="state.posCustomerName=this.value" required /></div>
-              <div><label class="form-label">${isBn ? 'মোবাইল নম্বর (ঐচ্ছিক)' : 'Phone Number'}</label><input type="text" id="pos-customer-phone" class="form-control font-mono" style="font-weight:700" value="${esc(state.posCustomerPhone)}" oninput="state.posCustomerPhone=this.value" placeholder="017xxxxxxxx" /></div>
+              <div><label class="form-label">${isBn ? 'কাস্টমারের নাম' : 'Customer Name'} *</label><input type="text" id="pos-customer-name" class="form-control" style="font-weight:700" value="${esc(state.posCustomerName)}" oninput="state.posCustomerName=this.value; updateSelectedCustomerBanner();" required /></div>
+              <div><label class="form-label">${isBn ? 'মোবাইল নম্বর (ঐচ্ছিক)' : 'Phone Number'}</label><input type="text" id="pos-customer-phone" class="form-control font-mono" style="font-weight:700" value="${esc(state.posCustomerPhone)}" oninput="state.posCustomerPhone=this.value; updateSelectedCustomerBanner();" placeholder="017xxxxxxxx" /></div>
             </div>
 
             <div style="border-top:1px solid var(--color-border); padding-top:20px; margin-top:20px;">
@@ -892,9 +1140,12 @@ function renderDashboard(container) {
           <div class="panel-header"><span class="panel-title">${isBn ? 'জনপ্রিয় আইটেম স্টক' : 'Popular Items Stock'}</span></div>
           <div class="panel-body" style="padding:12px 18px;">
             ${state.products.slice(0, 6).map((p) => `
-              <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--color-border-subtle); font-size:0.95rem;">
-                <div><div style="font-weight:700">${esc(cleanProductTitle(p.name))}</div><div style="color:var(--color-text-subtle); font-size:0.85rem">৳${p.sell_price} / ${esc(p.unit)}</div></div>
-                <div class="font-mono" style="font-weight:800; color:${p.stock === 0 ? 'var(--color-danger)' : p.stock < 20 ? 'var(--color-warning)' : 'var(--color-primary)'}">${p.stock} ${esc(p.unit)}</div>
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--color-border-subtle); font-size:0.95rem;">
+                <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+                  ${renderProductThumbHtml(p, 'thumb-xs')}
+                  <div style="min-width:0;"><div style="font-weight:700">${esc(cleanProductTitle(p.name))}</div><div style="color:var(--color-text-subtle); font-size:0.85rem">৳${p.sell_price} / ${esc(p.unit)}</div></div>
+                </div>
+                <div class="font-mono" style="font-weight:800; white-space:nowrap; color:${p.stock === 0 ? 'var(--color-danger)' : p.stock < 20 ? 'var(--color-warning)' : 'var(--color-primary)'}">${p.stock} ${esc(p.unit)}</div>
               </div>`).join('')}
           </div>
         </div>
@@ -915,7 +1166,7 @@ function renderDashboard(container) {
           ${sessionSales.slice(0, 12).map((sale) => `<tr>
             <td class="font-mono" style="font-weight:800">${esc(sale.memoNo)}</td>
             <td style="color:var(--color-text-subtle)">${esc(sale.date)}</td>
-            <td style="font-weight:700">${esc(sale.customerName)}</td>
+            <td><div style="display:flex; align-items:center; gap:9px;">${renderAvatarSvg(null, 32, sale.customerName, sale.Image)}<span style="font-weight:700">${esc(sale.customerName)}</span></div></td>
             <td>${esc((sale.items || []).map((it) => `${cleanProductTitle(it.productName)} (${it.quantity} ${it.unit})`).join(', ') || '-')}</td>
             <td class="text-right font-mono" style="font-weight:800">${formatTaka(sale.netPayable)}</td>
             <td class="text-right font-mono" style="font-weight:800; color:var(--color-primary)">${formatTaka(sale.profit)}</td>
@@ -931,6 +1182,33 @@ function renderDashboard(container) {
   renderCartSection();
 }
 
+function renderSelectedCustomerBannerHtml() {
+  const isBn = state.lang === 'bn';
+  const cName = (state.posCustomerName || '').trim();
+  if (!cName) return '';
+  const cust = (state.customers || []).find((c) => c.id === state.selectedCustomerId) || (state.customers || []).find((c) => c.name === cName);
+  const phone = state.posCustomerPhone || (cust && cust.phone) || '';
+  const isBusy = state.uploadingCustomerId && cust && state.uploadingCustomerId === cust.id;
+  return `<div class="selected-customer-banner">
+    <div class="selected-customer-banner-left">
+      ${renderAvatarSvg(cust, 44, cName)}
+      <div style="min-width:0;">
+        <div style="font-weight:800; font-size:0.98rem;">${esc(cName)}${cust && cust.shopName ? ` <span style="font-size:0.82rem; color:var(--color-text-muted); font-weight:600;">· ${esc(cust.shopName)}</span>` : ''}</div>
+        <div class="font-mono" style="font-size:0.82rem; color:var(--color-text-muted);">${phone ? esc(phone) : (isBn ? 'নির্বাচিত গ্রাহক' : 'Selected customer')}</div>
+      </div>
+    </div>
+    <label class="btn btn-outline btn-sm" style="cursor:pointer;">
+      📷 ${isBusy ? (isBn ? 'আপলোড হচ্ছে...' : 'Uploading...') : (isBn ? 'ছবি আপলোড' : 'Upload Photo')}
+      <input type="file" accept="image/*" style="display:none" onchange="uploadSelectedBannerCustomerPhoto(this)" />
+    </label>
+  </div>`;
+}
+
+window.updateSelectedCustomerBanner = function() {
+  const wrap = document.getElementById('selected-customer-banner-wrap');
+  if (wrap) wrap.innerHTML = renderSelectedCustomerBannerHtml();
+};
+
 // ----------------- POS INTERACTIONS (FOCUS-SAFE & TOGGLE CART) -----------------
 window.handleCustomerSearch = function(val) {
   state.customerSearchTerm = val;
@@ -940,30 +1218,83 @@ window.handleCustomerSearch = function(val) {
 
 window.toggleAddCustomerForm = function() {
   state.showAddCustomerForm = !state.showAddCustomerForm;
+  state.newCustomerPhotoUrl = '';
   render();
 };
 
-window.saveNewCustomer = function() {
+window.handleNewCustomerPhotoUpload = async function(inputEl) {
+  const file = inputEl.files && inputEl.files[0];
+  if (!file) return;
+  state.newCustomerUploading = true;
+  render();
+  const cName = (document.getElementById('new-cust-name')?.value || 'customer').trim();
+  const res = await uploadImageToSupabaseStorage(file, 'customers', cName || 'new_customer');
+  state.newCustomerUploading = false;
+  if (res.ok && res.publicUrl) {
+    state.newCustomerPhotoUrl = res.publicUrl;
+    showToast(state.lang === 'bn' ? 'গ্রাহকের ছবি Bucket 01-এ আপলোড হয়েছে!' : 'Photo uploaded to bucket 01!', 'success');
+  } else {
+    showToast(res.error || 'Upload failed', 'error');
+  }
+  render();
+};
+
+window.uploadSelectedBannerCustomerPhoto = async function(inputEl) {
+  const file = inputEl.files && inputEl.files[0];
+  if (!file) return;
+  const cName = (state.posCustomerName || '').trim();
+  if (!cName) return;
+  const cust = (state.customers || []).find((c) => c.id === state.selectedCustomerId) || (state.customers || []).find((c) => c.name === cName);
+  state.uploadingCustomerId = (cust && cust.id) || 'banner';
+  updateSelectedCustomerBanner();
+  const res = await uploadImageToSupabaseStorage(file, 'customers', cName);
+  state.uploadingCustomerId = null;
+  if (res.ok && res.publicUrl) {
+    if (cust) {
+      cust.Image = res.publicUrl;
+      cust.customPhoto = res.publicUrl;
+      saveJsonStorage(STORAGE_KEYS.CUSTOMERS, state.customers);
+    }
+    const dbRes = await updateCustomerSalesImageInDb(cName, res.publicUrl);
+    if (!dbRes.ok) {
+      showToast(`${cName}-এর ছবি আপলোড হয়েছে, তবে sales টেবিলে সেভ হয়নি: ${dbRes.error}`, 'error');
+    } else {
+      showToast(`${cName}-এর ছবি সফলভাবে আপডেট হয়েছে!`, 'success');
+    }
+    const grid = document.getElementById('pos-customer-grid');
+    if (grid) grid.innerHTML = renderCustomerGridHtml();
+  } else {
+    showToast(res.error || 'Upload failed', 'error');
+  }
+  updateSelectedCustomerBanner();
+};
+
+window.saveNewCustomer = async function() {
   const name = (document.getElementById('new-cust-name')?.value || '').trim();
   const shop = (document.getElementById('new-cust-shop')?.value || '').trim();
   const phone = (document.getElementById('new-cust-phone')?.value || '').trim();
   if (!name) { showToast(state.lang === 'bn' ? 'দয়া করে গ্রাহকের নাম লিখুন!' : 'Enter customer name!', 'error'); return; }
   const colors = ['#059669', '#4f46e5', '#d97706', '#0891b2', '#e11d48'];
+  const photoUrl = normalizeImageUrl(state.newCustomerPhotoUrl);
   const cust = {
     id: 'cust_' + Date.now(),
     name,
     shopName: shop || 'নিয়মিত ক্রেতা',
     phone,
+    Image: photoUrl || '',
+    customPhoto: photoUrl || '',
     shirtColor: colors[state.customers.length % colors.length],
     skinTone: '#d99b72',
     hairColor: '#1e293b',
   };
   state.customers.unshift(cust);
   saveJsonStorage(STORAGE_KEYS.CUSTOMERS, state.customers);
+  if (photoUrl) await updateCustomerSalesImageInDb(name, photoUrl);
   state.selectedCustomerId = cust.id;
   state.posCustomerName = cust.name;
   state.posCustomerPhone = cust.phone;
   state.showAddCustomerForm = false;
+  state.newCustomerPhotoUrl = '';
   showToast(state.lang === 'bn' ? 'নতুন গ্রাহক যোগ হয়েছে!' : 'Customer added!', 'success');
   render();
 };
@@ -980,6 +1311,7 @@ window.selectRegularCustomer = function(custId) {
   if (phoneInput) phoneInput.value = cust.phone || '';
   const grid = document.getElementById('pos-customer-grid');
   if (grid) grid.innerHTML = renderCustomerGridHtml();
+  updateSelectedCustomerBanner();
 };
 
 window.setPosCategory = function(cat) {
@@ -1077,9 +1409,12 @@ window.renderCartSection = function() {
     const lineProfit = lineTotal - (item.quantity || 0) * prod.buy_price;
     return `<div class="cart-item-row">
       <div class="cart-item-top">
-        <div>
-          <div style="font-size:1.05rem; font-weight:800;">#${idx + 1} ${esc(cleanProductTitle(prod.name))} <span style="font-size:0.85rem; color:var(--color-text-subtle);">(${esc(prod.category)})</span></div>
-          <div style="font-size:0.875rem; color:var(--color-text-muted);">${isBn ? 'মজুদ:' : 'Stock:'} <strong class="font-mono">${prod.stock} ${esc(prod.unit)}</strong> · ${isBn ? 'ক্রয়:' : 'Buy:'} ৳${prod.buy_price}</div>
+        <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+          ${renderProductThumbHtml(prod, 'thumb-sm')}
+          <div style="min-width:0;">
+            <div style="font-size:1.05rem; font-weight:800;">#${idx + 1} ${esc(cleanProductTitle(prod.name))} <span style="font-size:0.85rem; color:var(--color-text-subtle);">(${esc(prod.category)})</span></div>
+            <div style="font-size:0.875rem; color:var(--color-text-muted);">${isBn ? 'মজুদ:' : 'Stock:'} <strong class="font-mono">${prod.stock} ${esc(prod.unit)}</strong> · ${isBn ? 'ক্রয়:' : 'Buy:'} ৳${prod.buy_price}</div>
+          </div>
         </div>
         <div style="display:flex; align-items:center; gap:10px;">
           <div class="text-right">
@@ -1143,7 +1478,7 @@ window.updatePosCalculations = function() {
     if (lineTotalEl) lineTotalEl.textContent = formatTaka(lineTotal);
     if (lineProfitEl) lineProfitEl.textContent = `${isBn ? 'লাভ: ' : 'Profit: '}${formatTaka(lineTotal - lineCost)}`;
 
-    summaryRowsHtml += `<div class="summary-cart-row"><div style="min-width:0"><div style="font-weight:700">${esc(cleanProductTitle(prod.name))}</div><div class="font-mono" style="font-size:0.82rem; color:var(--color-text-subtle)">${qty} ${esc(prod.unit)} × ৳${rate}</div></div><div class="font-mono" style="font-weight:800">${formatTaka(lineTotal)}</div></div>`;
+    summaryRowsHtml += `<div class="summary-cart-row"><div style="display:flex; align-items:center; gap:8px; min-width:0">${renderProductThumbHtml(prod, 'thumb-xs')}<div style="min-width:0"><div style="font-weight:700">${esc(cleanProductTitle(prod.name))}</div><div class="font-mono" style="font-size:0.82rem; color:var(--color-text-subtle)">${qty} ${esc(prod.unit)} × ৳${rate}</div></div></div><div class="font-mono" style="font-weight:800">${formatTaka(lineTotal)}</div></div>`;
   });
 
   const unitBreakdown = Object.keys(unitTotals).map((u) => `${Math.round(unitTotals[u] * 100) / 100} ${u}`).join(' + ');
@@ -1156,7 +1491,10 @@ window.updatePosCalculations = function() {
   const profit = netPayable - totalCost;
   const marginPct = netPayable > 0 ? ((profit / netPayable) * 100).toFixed(1) : '0';
 
+  const summaryCustomerName = (state.posCustomerName || '').trim();
+  const summaryCustObj = (state.customers || []).find((c) => c.id === state.selectedCustomerId) || (state.customers || []).find((c) => c.name === summaryCustomerName);
   calcBox.innerHTML = `
+    ${summaryCustomerName ? `<div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:10px; background:var(--color-surface-muted); border:1px solid var(--color-border); margin-bottom:12px;">${renderAvatarSvg(summaryCustObj, 34, summaryCustomerName)}<div style="min-width:0;"><div style="font-weight:800; font-size:0.92rem;">${esc(summaryCustomerName)}</div>${state.posCustomerPhone ? `<div class="font-mono" style="font-size:0.78rem; color:var(--color-text-muted);">${esc(state.posCustomerPhone)}</div>` : ''}</div></div>` : ''}
     ${state.cart.length === 0
       ? `<div style="padding:14px; text-align:center; border:1px dashed var(--color-border); border-radius:10px; color:var(--color-text-subtle); margin-bottom:14px;">${isBn ? 'কার্টে পণ্য যোগ করলে এখানে রিয়েল-টাইম হিসাব দেখাবে' : 'Add products for real-time summary'}</div>`
       : `<div class="summary-cart-items">${summaryRowsHtml}</div>`}
@@ -1223,11 +1561,15 @@ window.handlePosSubmit = async function(e) {
   const due = Math.max(0, netPayable - paid);
   const profit = netPayable - totalCost;
 
+  const matchedCustomer = (state.customers || []).find((c) => c.id === state.selectedCustomerId && c.name === customerName) || (state.customers || []).find((c) => c.name === customerName);
+  const resolvedCustomerImage = getCustomerImageUrl(customerName, matchedCustomer);
+
   const saleRecord = {
     id: generateFallbackUuid(),
     memoNo: generateMemoNo(),
     customerName,
     customerPhone,
+    Image: resolvedCustomerImage || '',
     items: saleItems,
     totalAmount,
     totalCost,
@@ -1330,13 +1672,22 @@ function renderProducts(container) {
 
 function buildProductsTableHtml(filtered) {
   const isBn = state.lang === 'bn';
-  return `<table class="data-table"><thead><tr><th class="text-center">ID</th><th>${isBn ? 'পণ্যের নাম' : 'Name'}</th><th>${isBn ? 'ক্যাটাগরি' : 'Category'}</th><th class="text-right">${isBn ? 'ক্রয়' : 'Buy'}</th><th class="text-right">${isBn ? 'বিক্রয়' : 'Sell'}</th><th class="text-center">${isBn ? 'স্টক' : 'Stock'}</th><th class="text-center">${isBn ? 'স্ট্যাটাস' : 'Status'}</th><th class="text-right">${isBn ? 'অ্যাকশন' : 'Actions'}</th></tr></thead><tbody>
+  return `<table class="data-table"><thead><tr><th class="text-center">ID</th><th>${isBn ? 'পণ্যের ছবি ও নাম' : 'Product'}</th><th>${isBn ? 'ক্যাটাগরি' : 'Category'}</th><th class="text-right">${isBn ? 'ক্রয়' : 'Buy'}</th><th class="text-right">${isBn ? 'বিক্রয়' : 'Sell'}</th><th class="text-center">${isBn ? 'স্টক' : 'Stock'}</th><th class="text-center">${isBn ? 'স্ট্যাটাস' : 'Status'}</th><th class="text-right">${isBn ? 'অ্যাকশন' : 'Actions'}</th></tr></thead><tbody>
     ${filtered.length === 0 ? `<tr><td colspan="8" style="text-align:center; padding:28px; color:var(--color-text-muted);">${isBn ? 'কোনো পণ্য পাওয়া যায়নি' : 'No products found'}</td></tr>` : filtered.map((p) => {
       const isZero = p.stock === 0;
       const isLow = p.stock > 0 && p.stock <= (p.minStockAlert || 15);
+      const isUploading = state.uploadingProductId === p.id;
       return `<tr>
         <td class="text-center font-mono">${p.id}</td>
-        <td style="font-weight:700">${esc(cleanProductTitle(p.name))}</td>
+        <td>
+          <div class="product-name-flex">
+            <div class="prod-photo-wrap">
+              ${renderProductThumbHtml(p, 'thumb-md')}
+              <label class="prod-row-upload-btn" title="${isBn ? 'ছবি আপলোড (Bucket 01)' : 'Upload Photo'}">${isUploading ? '⏳' : '📷'}<input type="file" accept="image/*" style="display:none" ${isUploading ? 'disabled' : ''} onchange="uploadQuickProductPhoto(${p.id}, this)" /></label>
+            </div>
+            <span style="font-weight:700">${esc(cleanProductTitle(p.name))}</span>
+          </div>
+        </td>
         <td>${esc(p.category)}</td>
         <td class="text-right font-mono">৳${p.buy_price}</td>
         <td class="text-right font-mono" style="font-weight:700">৳${p.sell_price}</td>
@@ -1352,6 +1703,30 @@ function buildProductsTableHtml(filtered) {
     }).join('')}
   </tbody></table>`;
 }
+
+window.uploadQuickProductPhoto = async function(prodId, inputEl) {
+  const file = inputEl.files && inputEl.files[0];
+  if (!file) return;
+  const prod = state.products.find((p) => p.id === prodId);
+  if (!prod) return;
+  state.uploadingProductId = prodId;
+  renderProductsTableOnly();
+  const upRes = await uploadImageToSupabaseStorage(file, 'products', `prod_${prodId}_${prod.name}`);
+  state.uploadingProductId = null;
+  if (!upRes.ok || !upRes.publicUrl) {
+    showToast(upRes.error || 'Upload failed', 'error');
+    renderProductsTableOnly();
+    return;
+  }
+  prod.Image = upRes.publicUrl;
+  const dbRes = await updateProductImageInDb(prodId, upRes.publicUrl);
+  if (!dbRes.ok) {
+    showToast(`ছবি আপলোড হয়েছে, তবে ডাটাবেজে সেভ হয়নি: ${dbRes.error}`, 'error');
+  } else {
+    showToast(`${cleanProductTitle(prod.name)}-এর ছবি আপলোড ও সেভ হয়েছে!`, 'success');
+  }
+  renderProductsTableOnly();
+};
 
 window.renderProductsTableOnly = function() {
   const wrap = document.getElementById('products-table-wrap');
@@ -1441,7 +1816,7 @@ function buildHistoryTableHtml(filtered) {
     ${filtered.length === 0 ? `<tr><td colspan="7" style="text-align:center; padding:32px; color:var(--color-text-muted)">${isBn ? 'নির্বাচিত ফিল্টারে কোনো বিক্রি পাওয়া যায়নি' : 'No matching sales'}</td></tr>` : filtered.map((sale) => `<tr>
       <td class="font-mono" style="font-weight:700">${esc(sale.memoNo)}</td>
       <td>${esc(sale.date)}</td>
-      <td style="font-weight:700">${esc(sale.customerName)}</td>
+      <td><div style="display:flex; align-items:center; gap:9px;">${renderAvatarSvg(null, 32, sale.customerName, sale.Image)}<span style="font-weight:700">${esc(sale.customerName)}</span></div></td>
       <td>${esc((sale.items || []).map((it) => `${cleanProductTitle(it.productName)} × ${it.quantity} ${it.unit}`).join(', '))}</td>
       <td class="text-right font-mono" style="font-weight:700">${formatTaka(sale.netPayable)}</td>
       <td class="text-right font-mono" style="font-weight:700; color:var(--color-primary)">${formatTaka(sale.profit)}</td>
@@ -1505,7 +1880,7 @@ function renderRestock(container) {
       <div class="panel-header"><span class="panel-title">${isBn ? 'দ্রুত স্টক রিস্টক প্যানেল' : 'Restock Panel'}</span></div>
       <div class="table-responsive"><table class="data-table"><thead><tr><th>${isBn ? 'পণ্য' : 'Product'}</th><th class="text-center">${isBn ? 'বর্তমান স্টক' : 'Stock'}</th><th class="text-center">${isBn ? 'নতুন ক্রয়দর' : 'Buy Rate'}</th><th class="text-center">${isBn ? 'যোগ পরিমাণ' : 'Add Qty'}</th><th class="text-right">${isBn ? 'অ্যাকশন' : 'Action'}</th></tr></thead><tbody>
         ${[...outOfStock, ...lowStock, ...optimal].map((p) => `<tr>
-          <td><strong>${esc(cleanProductTitle(p.name))}</strong><div style="font-size:0.8rem; color:var(--color-text-subtle)">${esc(p.category)}</div></td>
+          <td><div class="product-name-flex">${renderProductThumbHtml(p, 'thumb-sm')}<div><strong>${esc(cleanProductTitle(p.name))}</strong><div style="font-size:0.8rem; color:var(--color-text-subtle)">${esc(p.category)}</div></div></div></td>
           <td class="text-center font-mono" style="font-weight:800">${p.stock} ${esc(p.unit)}</td>
           <td class="text-center"><input type="number" id="restock-price-${p.id}" class="form-control font-mono" style="width:95px; text-align:center; display:inline-block" value="${p.buy_price}" /></td>
           <td class="text-center"><input type="number" id="restock-qty-${p.id}" class="form-control font-mono" style="width:90px; text-align:center; display:inline-block" value="${p.stock === 0 ? 100 : 50}" min="1" /></td>
@@ -1586,11 +1961,11 @@ function renderAnalytics(container) {
           <div class="grid-2">
             <div>
               <h4 style="margin-bottom:10px; font-weight:800;">${isBn ? 'পণ্য অনুযায়ী বিক্রয়' : 'Items Sold'}</h4>
-              ${ds.itemBreakdown.length === 0 ? `<p style="color:var(--color-text-muted)">${isBn ? 'এই দিনে কোনো পণ্য বিক্রি হয়নি' : 'No items sold'}</p>` : `<table class="data-table"><thead><tr><th>${isBn ? 'পণ্য' : 'Product'}</th><th class="text-right">${isBn ? 'পরিমাণ' : 'Qty'}</th><th class="text-right">${isBn ? 'টাকা' : 'Total'}</th></tr></thead><tbody>${ds.itemBreakdown.map((it) => `<tr><td><strong>${esc(it.name)}</strong></td><td class="text-right font-mono">${Number(it.qty.toFixed(2))} ${esc(it.unit)}</td><td class="text-right font-mono" style="font-weight:800">${formatTaka(it.amount)}</td></tr>`).join('')}</tbody></table>`}
+              ${ds.itemBreakdown.length === 0 ? `<p style="color:var(--color-text-muted)">${isBn ? 'এই দিনে কোনো পণ্য বিক্রি হয়নি' : 'No items sold'}</p>` : `<table class="data-table"><thead><tr><th>${isBn ? 'পণ্য' : 'Product'}</th><th class="text-right">${isBn ? 'পরিমাণ' : 'Qty'}</th><th class="text-right">${isBn ? 'টাকা' : 'Total'}</th></tr></thead><tbody>${ds.itemBreakdown.map((it) => `<tr><td><div class="product-name-flex">${renderProductThumbHtml(null, 'thumb-xs', it.name)}<strong>${esc(it.name)}</strong></div></td><td class="text-right font-mono">${Number(it.qty.toFixed(2))} ${esc(it.unit)}</td><td class="text-right font-mono" style="font-weight:800">${formatTaka(it.amount)}</td></tr>`).join('')}</tbody></table>`}
             </div>
             <div>
               <h4 style="margin-bottom:10px; font-weight:800;">${isBn ? 'গ্রাহক ও মেমো তালিকা' : 'Memos'}</h4>
-              ${dailySales.length === 0 ? `<p style="color:var(--color-text-muted)">${isBn ? 'কোনো মেমো নেই' : 'No memos'}</p>` : dailySales.map((s) => `<div style="padding:10px 12px; margin-bottom:8px; border:1px solid var(--color-border); border-radius:10px; display:flex; justify-content:space-between; align-items:center; gap:8px;"><div><strong>${esc(s.customerName)}</strong> <span class="font-mono" style="font-size:0.85rem; color:var(--color-text-subtle)">(${esc(s.memoNo)})</span><div style="font-size:0.85rem; color:var(--color-text-muted)">${esc((s.items || []).map((it) => `${cleanProductTitle(it.productName)} ${it.quantity} ${it.unit}`).join(', '))}</div></div><div class="text-right"><div class="font-mono" style="font-weight:800">${formatTaka(s.netPayable)}</div><button type="button" class="btn btn-outline btn-sm" onclick="showInvoiceModal('${esc(s.id)}')">👁️ ${isBn ? 'মেমো' : 'Memo'}</button></div></div>`).join('')}
+              ${dailySales.length === 0 ? `<p style="color:var(--color-text-muted)">${isBn ? 'কোনো মেমো নেই' : 'No memos'}</p>` : dailySales.map((s) => `<div style="padding:10px 12px; margin-bottom:8px; border:1px solid var(--color-border); border-radius:10px; display:flex; justify-content:space-between; align-items:center; gap:10px;"><div style="display:flex; align-items:center; gap:10px; min-width:0;">${renderAvatarSvg(null, 36, s.customerName, s.Image)}<div style="min-width:0;"><strong>${esc(s.customerName)}</strong> <span class="font-mono" style="font-size:0.85rem; color:var(--color-text-subtle)">(${esc(s.memoNo)})</span><div style="font-size:0.85rem; color:var(--color-text-muted)">${esc((s.items || []).map((it) => `${cleanProductTitle(it.productName)} ${it.quantity} ${it.unit}`).join(', '))}</div></div></div><div class="text-right"><div class="font-mono" style="font-weight:800">${formatTaka(s.netPayable)}</div><button type="button" class="btn btn-outline btn-sm" onclick="showInvoiceModal('${esc(s.id)}')">👁️ ${isBn ? 'মেমো' : 'Memo'}</button></div></div>`).join('')}
             </div>
           </div>
         </div>
@@ -1643,7 +2018,10 @@ function renderAnalytics(container) {
     bodyHtml = `
       <div class="panel">
         <div class="panel-header" style="flex-wrap:wrap; gap:10px;">
-          <span class="panel-title">👤 ${isBn ? 'গ্রাহকভিত্তিক খতিয়ান ও রিপোর্ট' : 'Customer Report'}</span>
+          <div style="display:flex; align-items:center; gap:10px;">
+            ${renderAvatarSvg(null, 36, state.analyticsCustomerName)}
+            <span class="panel-title">${esc(state.analyticsCustomerName)} — ${isBn ? 'খতিয়ান ও রিপোর্ট' : 'Customer Report'}</span>
+          </div>
           <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
             <select class="form-control" style="width:auto; font-weight:800;" onchange="state.analyticsCustomerName=this.value; render()">${customerNames.map((cn) => `<option value="${esc(cn)}" ${cn === state.analyticsCustomerName ? 'selected' : ''}>${esc(cn)}</option>`).join('')}</select>
             <button type="button" class="chip ${state.analyticsCustRange === 'specific' ? 'active' : ''}" onclick="state.analyticsCustRange='specific'; render()">${isBn ? 'নির্দিষ্ট দিন' : 'Day'}</button>
@@ -1661,7 +2039,7 @@ function renderAnalytics(container) {
             <div class="kpi-card kpi-amber"><div class="kpi-header"><span>${isBn ? 'মোট বাকি' : 'Due'}</span></div><div class="kpi-value tabular-nums" style="color:${cs.totalDue > 0 ? 'var(--color-danger)' : 'inherit'}">${formatTaka(cs.totalDue)}</div></div>
           </div>
           <h4 style="margin-bottom:10px; font-weight:800;">${esc(state.analyticsCustomerName)} — ${isBn ? 'পণ্য অনুযায়ী মোট পরিমাণ' : 'Purchased Items'}</h4>
-          ${cs.itemBreakdown.length === 0 ? `<p style="color:var(--color-text-muted); margin-bottom:16px;">${isBn ? 'এই সময়ে কোনো পণ্য কেনেননি' : 'No items'}</p>` : `<div class="table-responsive" style="margin-bottom:20px;"><table class="data-table"><thead><tr><th>${isBn ? 'পণ্য' : 'Product'}</th><th class="text-right">${isBn ? 'মোট পরিমাণ' : 'Qty'}</th><th class="text-right">${isBn ? 'মোট টাকা' : 'Value'}</th></tr></thead><tbody>${cs.itemBreakdown.map((it) => `<tr><td><strong>${esc(it.name)}</strong></td><td class="text-right font-mono" style="font-weight:800; color:var(--color-primary)">${Number(it.qty.toFixed(2))} ${esc(it.unit)}</td><td class="text-right font-mono" style="font-weight:800">${formatTaka(it.amount)}</td></tr>`).join('')}</tbody></table></div>`}
+          ${cs.itemBreakdown.length === 0 ? `<p style="color:var(--color-text-muted); margin-bottom:16px;">${isBn ? 'এই সময়ে কোনো পণ্য কেনেননি' : 'No items'}</p>` : `<div class="table-responsive" style="margin-bottom:20px;"><table class="data-table"><thead><tr><th>${isBn ? 'পণ্য' : 'Product'}</th><th class="text-right">${isBn ? 'মোট পরিমাণ' : 'Qty'}</th><th class="text-right">${isBn ? 'মোট টাকা' : 'Value'}</th></tr></thead><tbody>${cs.itemBreakdown.map((it) => `<tr><td><div class="product-name-flex">${renderProductThumbHtml(null, 'thumb-xs', it.name)}<strong>${esc(it.name)}</strong></div></td><td class="text-right font-mono" style="font-weight:800; color:var(--color-primary)">${Number(it.qty.toFixed(2))} ${esc(it.unit)}</td><td class="text-right font-mono" style="font-weight:800">${formatTaka(it.amount)}</td></tr>`).join('')}</tbody></table></div>`}
           <h4 style="margin-bottom:10px; font-weight:800;">${isBn ? 'মেমো তালিকা' : 'Memos'}</h4>
           ${custSales.map((s) => `<div style="padding:10px 14px; margin-bottom:8px; border:1px solid var(--color-border); border-radius:10px; display:flex; justify-content:space-between; align-items:center; gap:10px;"><div><strong class="font-mono">${esc(s.memoNo)}</strong> · <span style="font-size:0.875rem; color:var(--color-text-subtle)">${esc(s.date)}</span><div style="font-size:0.9rem;">${esc((s.items || []).map((it) => `${cleanProductTitle(it.productName)} (${it.quantity} ${it.unit})`).join(', '))}</div></div><div class="text-right"><div class="font-mono" style="font-weight:800">${formatTaka(s.netPayable)}</div><button type="button" class="btn btn-outline btn-sm" style="margin-top:4px;" onclick="showInvoiceModal('${esc(s.id)}')">👁️ মেমো</button></div></div>`).join('')}
         </div>
@@ -1695,7 +2073,10 @@ window.showInvoiceModal = function(saleId) {
       <p style="font-size:0.875rem; color:#475569">${isBn ? 'মোবাইল: ০১৭১২-৩৪৫৬৭৮, ০১৮১২-৩৪৫৬৭৮' : 'Mobile: 01712-345678'}</p>
     </div>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; font-size:0.9rem; background:#f8fafc; padding:12px; border-radius:8px; margin-bottom:14px; color:#0f172a;">
-      <div><div>${isBn ? 'কাস্টমার:' : 'Customer:'}</div><strong>${esc(sale.customerName)}</strong><div>${esc(sale.customerPhone || '')}</div></div>
+      <div style="display:flex; align-items:center; gap:10px;">
+        ${renderAvatarSvg(null, 42, sale.customerName, sale.Image)}
+        <div><div>${isBn ? 'কাস্টমার:' : 'Customer:'}</div><strong>${esc(sale.customerName)}</strong><div>${esc(sale.customerPhone || '')}</div></div>
+      </div>
       <div style="text-align:right;"><div class="font-mono"><strong>${esc(sale.memoNo)}</strong></div><div>${esc(sale.date)}</div><div>${esc(sale.paymentMethod)}</div></div>
     </div>
     <table style="width:100%; border-collapse:collapse; font-size:0.9rem; margin-bottom:14px; color:#0f172a;">
@@ -1713,11 +2094,65 @@ window.showInvoiceModal = function(saleId) {
 window.closeInvoiceModal = () => document.getElementById('invoice-modal-overlay')?.classList.remove('active');
 window.printInvoice = () => window.print();
 
+function refreshModalProductImagePreview() {
+  const prev = document.getElementById('modal-prod-image-preview');
+  const removeBtn = document.getElementById('modal-prod-image-remove');
+  const statusEl = document.getElementById('modal-prod-image-status');
+  const nameVal = (document.getElementById('modal-prod-name')?.value || '').trim();
+  const catVal = document.getElementById('modal-prod-category')?.value || 'অন্যান্য';
+  if (prev) {
+    prev.innerHTML = renderProductThumbHtml({ name: nameVal || 'পণ্য', category: catVal, Image: state.modalProductImage }, 'thumb-xl');
+  }
+  if (removeBtn) removeBtn.style.display = state.modalProductImage ? 'inline-flex' : 'none';
+  if (statusEl) {
+    statusEl.textContent = state.modalProductUploading
+      ? '⏳ Supabase Storage Bucket "01"-এ আপলোড হচ্ছে...'
+      : state.modalProductImage
+        ? '✓ ছবির লিংক সংযুক্ত (products.Image-এ সেভ হবে)'
+        : 'ছবি না দিলে ক্যাটাগরির আইকন দেখাবে';
+  }
+}
+
+window.handleModalProductImageUpload = async function(inputEl) {
+  const file = inputEl.files && inputEl.files[0];
+  if (!file) return;
+  state.modalProductUploading = true;
+  refreshModalProductImagePreview();
+  const prodName = (document.getElementById('modal-prod-name')?.value || '').trim();
+  const res = await uploadImageToSupabaseStorage(file, 'products', prodName || (state.editingProductId ? `prod_${state.editingProductId}` : 'product'));
+  state.modalProductUploading = false;
+  if (res.ok && res.publicUrl) {
+    state.modalProductImage = res.publicUrl;
+    const urlInput = document.getElementById('modal-prod-image-url');
+    if (urlInput) urlInput.value = res.publicUrl;
+    showToast(state.lang === 'bn' ? 'পণ্যের ছবি Bucket 01-এ আপলোড হয়েছে!' : 'Product photo uploaded!', 'success');
+  } else {
+    showToast(res.error || 'Upload failed', 'error');
+  }
+  refreshModalProductImagePreview();
+};
+
+window.syncModalProductImageUrl = function(val) {
+  state.modalProductImage = normalizeImageUrl(val);
+  refreshModalProductImagePreview();
+};
+
+window.clearModalProductImage = function() {
+  state.modalProductImage = '';
+  const urlInput = document.getElementById('modal-prod-image-url');
+  if (urlInput) urlInput.value = '';
+  const fileInput = document.getElementById('modal-prod-image-file');
+  if (fileInput) fileInput.value = '';
+  refreshModalProductImagePreview();
+};
+
 window.showProductModal = function(prodId) {
   state.editingProductId = prodId;
   const overlay = document.getElementById('product-modal-overlay');
   if (!overlay) return;
   const prod = prodId ? state.products.find((p) => p.id === prodId) : null;
+  state.modalProductImage = normalizeImageUrl(prod && prod.Image);
+  state.modalProductUploading = false;
   document.getElementById('modal-prod-name').value = prod ? prod.name : '';
   document.getElementById('modal-prod-category').value = prod ? prod.category : 'ক্যারেট';
   document.getElementById('modal-prod-buy').value = prod ? prod.buy_price : 0;
@@ -1725,14 +2160,23 @@ window.showProductModal = function(prodId) {
   document.getElementById('modal-prod-unit').value = prod ? prod.unit : 'পিস';
   document.getElementById('modal-prod-stock').value = prod ? prod.stock : 100;
   document.getElementById('modal-prod-alert').value = prod ? (prod.minStockAlert || 20) : 20;
+  const urlInput = document.getElementById('modal-prod-image-url');
+  if (urlInput) urlInput.value = state.modalProductImage;
+  refreshModalProductImagePreview();
   overlay.classList.add('active');
 };
-window.closeProductModal = () => { document.getElementById('product-modal-overlay')?.classList.remove('active'); state.editingProductId = null; };
+window.closeProductModal = () => {
+  document.getElementById('product-modal-overlay')?.classList.remove('active');
+  state.editingProductId = null;
+  state.modalProductImage = '';
+};
 
 window.handleSaveProductModal = async function(e) {
   e.preventDefault();
   const name = document.getElementById('modal-prod-name').value.trim();
   if (!name) return;
+  const rawImgUrl = document.getElementById('modal-prod-image-url')?.value;
+  const finalImg = normalizeImageUrl(rawImgUrl !== undefined ? rawImgUrl : state.modalProductImage);
   const payload = {
     name,
     category: document.getElementById('modal-prod-category').value,
@@ -1741,6 +2185,7 @@ window.handleSaveProductModal = async function(e) {
     unit: document.getElementById('modal-prod-unit').value,
     stock: parseFloat(document.getElementById('modal-prod-stock').value) || 0,
     minStockAlert: parseFloat(document.getElementById('modal-prod-alert').value) || 20,
+    Image: finalImg || '',
   };
   let savedProd = null;
   if (state.editingProductId) {
@@ -1772,15 +2217,18 @@ window.renderCustomerSettingsModal = function() {
   const isBn = state.lang === 'bn';
   body.innerHTML = `<div class="customer-settings-grid">${state.customers.map((c) => {
     const isEditing = state.editingCustomerId === c.id;
+    const resolvedPhoto = getCustomerImageUrl(c.name, c);
+    const isUploading = state.uploadingCustomerId === c.id;
     return `<div class="customer-settings-card">
-      <div>${renderAvatarSvg(c, 64)}</div>
+      <div>${renderAvatarSvg(c, 64, c.name, resolvedPhoto)}</div>
       <div style="flex:1; min-width:0;">
         ${isEditing ? `
           <input type="text" id="edit-cust-name-${esc(c.id)}" class="form-control" style="margin-bottom:6px; padding:6px 10px;" value="${esc(c.name)}" />
           <input type="text" id="edit-cust-shop-${esc(c.id)}" class="form-control" style="margin-bottom:6px; padding:6px 10px;" value="${esc(c.shopName)}" />
-          <input type="text" id="edit-cust-phone-${esc(c.id)}" class="form-control font-mono" style="margin-bottom:8px; padding:6px 10px;" value="${esc(c.phone || '')}" />
+          <input type="text" id="edit-cust-phone-${esc(c.id)}" class="form-control font-mono" style="margin-bottom:6px; padding:6px 10px;" value="${esc(c.phone || '')}" />
+          <input type="url" id="edit-cust-image-${esc(c.id)}" class="form-control font-mono" style="margin-bottom:8px; padding:6px 10px; font-size:0.82rem;" placeholder="https://.../storage/v1/object/public/01/..." value="${esc(resolvedPhoto)}" />
           <div style="display:flex; gap:6px; flex-wrap:wrap;">
-            <label class="btn btn-outline btn-sm" style="cursor:pointer;">📷 ${isBn ? 'ছবি দিন' : 'Photo'}<input type="file" accept="image/*" style="display:none" onchange="uploadCustomerPhoto('${esc(c.id)}', this)" /></label>
+            <label class="btn btn-outline btn-sm" style="cursor:pointer;">📷 ${isUploading ? (isBn ? 'আপলোড হচ্ছে...' : 'Uploading...') : (isBn ? 'ছবি দিন (Bucket 01)' : 'Upload Photo')}<input type="file" accept="image/*" style="display:none" ${isUploading ? 'disabled' : ''} onchange="uploadCustomerPhoto('${esc(c.id)}', this)" /></label>
             <button type="button" class="btn btn-primary btn-sm" onclick="saveCustomerProfileEdit('${esc(c.id)}')">${isBn ? 'সংরক্ষণ' : 'Save'}</button>
             <button type="button" class="btn btn-outline btn-sm" onclick="state.editingCustomerId=null; renderCustomerSettingsModal()">${isBn ? 'বাতিল' : 'Cancel'}</button>
           </div>
@@ -1789,8 +2237,8 @@ window.renderCustomerSettingsModal = function() {
           <div style="font-size:0.875rem; color:var(--color-text-muted);">${esc(c.shopName)}</div>
           <div class="font-mono" style="font-size:0.85rem; color:var(--color-text-subtle); margin-bottom:10px;">${esc(c.phone || '')}</div>
           <div style="display:flex; flex-wrap:wrap; gap:6px;">
-            <label class="btn btn-outline btn-sm" style="cursor:pointer;">📷 ${c.customPhoto ? (isBn ? 'ছবি বদলান' : 'Change') : (isBn ? 'ছবি আপলোড' : 'Upload')}<input type="file" accept="image/*" style="display:none" onchange="uploadCustomerPhoto('${esc(c.id)}', this)" /></label>
-            ${c.customPhoto ? `<button type="button" class="btn btn-outline btn-sm" onclick="resetCustomerPhoto('${esc(c.id)}')">↩️ ${isBn ? 'অবতার' : 'Avatar'}</button>` : ''}
+            <label class="btn btn-outline btn-sm" style="cursor:pointer;">📷 ${isUploading ? (isBn ? 'আপলোড হচ্ছে...' : 'Uploading...') : resolvedPhoto ? (isBn ? 'ছবি বদলান' : 'Change') : (isBn ? 'ছবি আপলোড' : 'Upload')}<input type="file" accept="image/*" style="display:none" ${isUploading ? 'disabled' : ''} onchange="uploadCustomerPhoto('${esc(c.id)}', this)" /></label>
+            ${resolvedPhoto ? `<button type="button" class="btn btn-outline btn-sm" onclick="resetCustomerPhoto('${esc(c.id)}')">↩️ ${isBn ? 'অবতার' : 'Avatar'}</button>` : ''}
             <button type="button" class="btn btn-outline btn-sm" onclick="state.editingCustomerId='${esc(c.id)}'; renderCustomerSettingsModal()">✏️ ${isBn ? 'এডিট' : 'Edit'}</button>
           </div>
         `}
@@ -1799,37 +2247,65 @@ window.renderCustomerSettingsModal = function() {
   }).join('')}</div>`;
 };
 
-window.uploadCustomerPhoto = function(custId, inputEl) {
+window.uploadCustomerPhoto = async function(custId, inputEl) {
   const file = inputEl.files && inputEl.files[0];
   if (!file) return;
-  compressImageFile(file, 260, (dataUrl) => {
-    const cust = state.customers.find((c) => c.id === custId);
-    if (cust) {
-      cust.customPhoto = dataUrl;
-      saveJsonStorage(STORAGE_KEYS.CUSTOMERS, state.customers);
-      showToast(`${cust.name}-এর ছবি আপডেট হয়েছে!`, 'success');
-      renderCustomerSettingsModal();
-    }
-  });
-};
-
-window.resetCustomerPhoto = function(custId) {
   const cust = state.customers.find((c) => c.id === custId);
-  if (cust) { delete cust.customPhoto; saveJsonStorage(STORAGE_KEYS.CUSTOMERS, state.customers); renderCustomerSettingsModal(); }
+  if (!cust) return;
+  state.uploadingCustomerId = custId;
+  renderCustomerSettingsModal();
+  const res = await uploadImageToSupabaseStorage(file, 'customers', cust.name || custId);
+  state.uploadingCustomerId = null;
+  if (!res.ok || !res.publicUrl) {
+    showToast(res.error || 'Upload failed', 'error');
+    renderCustomerSettingsModal();
+    return;
+  }
+  cust.Image = res.publicUrl;
+  cust.customPhoto = res.publicUrl;
+  saveJsonStorage(STORAGE_KEYS.CUSTOMERS, state.customers);
+  const dbRes = await updateCustomerSalesImageInDb(cust.name, res.publicUrl);
+  if (!dbRes.ok) {
+    showToast(`${cust.name}-এর ছবি Bucket 01-এ আপলোড হয়েছে, তবে sales টেবিলে সেভ হয়নি: ${dbRes.error}`, 'error');
+  } else {
+    showToast(`${cust.name}-এর ছবি Bucket 01 ও sales.Image-এ আপডেট হয়েছে!`, 'success');
+  }
+  renderCustomerSettingsModal();
 };
 
-window.saveCustomerProfileEdit = function(custId) {
+window.resetCustomerPhoto = async function(custId) {
+  const cust = state.customers.find((c) => c.id === custId);
+  if (!cust) return;
+  delete cust.customPhoto;
+  delete cust.Image;
+  saveJsonStorage(STORAGE_KEYS.CUSTOMERS, state.customers);
+  await updateCustomerSalesImageInDb(cust.name, null);
+  showToast(`${cust.name}-এর ডিফল্ট অবতার ফেরানো হয়েছে`, 'info');
+  renderCustomerSettingsModal();
+};
+
+window.saveCustomerProfileEdit = async function(custId) {
   const cust = state.customers.find((c) => c.id === custId);
   if (!cust) return;
   const n = document.getElementById(`edit-cust-name-${custId}`)?.value.trim();
   const s = document.getElementById(`edit-cust-shop-${custId}`)?.value.trim();
   const p = document.getElementById(`edit-cust-phone-${custId}`)?.value.trim();
+  const imgUrl = normalizeImageUrl(document.getElementById(`edit-cust-image-${custId}`)?.value);
   if (!n) return;
   cust.name = n;
   cust.shopName = s || 'নিয়মিত ক্রেতা';
   cust.phone = p || '';
+  if (imgUrl) {
+    cust.Image = imgUrl;
+    cust.customPhoto = imgUrl;
+  } else {
+    delete cust.Image;
+    delete cust.customPhoto;
+  }
   saveJsonStorage(STORAGE_KEYS.CUSTOMERS, state.customers);
+  await updateCustomerSalesImageInDb(n, imgUrl || null);
   state.editingCustomerId = null;
+  showToast(`${n}-এর তথ্য সংরক্ষণ হয়েছে!`, 'success');
   renderCustomerSettingsModal();
 };
 
@@ -1966,6 +2442,29 @@ function ensureStandaloneEnhancements() {
       .product-card-price small { font-size: 0.76rem; color: var(--color-text-subtle); }
       .product-card-stock { font-size: 0.8rem; font-weight: 700; color: var(--color-text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
       .product-card-stock.low { color: #d97706; }
+      .img-fallback-hidden { display: none !important; }
+      .customer-initials-badge { width: 100%; height: 100%; border-radius: 9999px; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 800; user-select: none; text-shadow: 0 1px 2px rgba(0,0,0,0.28); }
+      .selected-customer-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 14px; border-radius: 12px; border: 1px solid var(--color-primary-border, rgba(16,185,129,0.35)); background-color: var(--color-primary-light, rgba(16,185,129,0.08)); }
+      .selected-customer-banner-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+      .product-thumb-wrap { position: relative; border-radius: 10px; overflow: hidden; flex-shrink: 0; border: 1px solid var(--color-border, #e2e8f0); background-color: var(--color-surface, #fff); display: inline-flex; align-items: center; justify-content: center; }
+      .product-thumb-wrap.thumb-xs { width: 28px; height: 28px; border-radius: 7px; }
+      .product-thumb-wrap.thumb-sm { width: 38px; height: 38px; border-radius: 9px; }
+      .product-thumb-wrap.thumb-md { width: 44px; height: 44px; border-radius: 10px; }
+      .product-thumb-wrap.thumb-lg { width: 56px; height: 56px; border-radius: 12px; }
+      .product-thumb-wrap.thumb-xl { width: 76px; height: 76px; border-radius: 14px; }
+      .product-thumb-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+      .product-thumb-fallback { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: var(--color-primary, #059669); background-color: var(--color-surface-muted, #f8fafc); }
+      .product-thumb-fallback.cat-crate { background: rgba(217,119,6,0.14); color: #d97706; }
+      .product-thumb-fallback.cat-paper { background: rgba(14,165,233,0.14); color: #0284c7; }
+      .product-thumb-fallback.cat-water { background: rgba(6,182,212,0.14); color: #0891b2; }
+      .product-thumb-fallback.cat-white { background: rgba(100,116,139,0.14); color: #475569; }
+      .product-thumb-fallback.cat-blue { background: rgba(37,99,235,0.14); color: #2563eb; }
+      .product-thumb-fallback.cat-net { background: rgba(16,185,129,0.14); color: #059669; }
+      .product-thumb-fallback.cat-other { background: rgba(139,92,246,0.14); color: #7c3aed; }
+      .product-name-flex { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+      .prod-photo-wrap { position: relative; display: inline-flex; flex-shrink: 0; }
+      .prod-row-upload-btn { position: absolute; bottom: -4px; right: -4px; width: 21px; height: 21px; border-radius: 9999px; background: var(--color-surface, #fff); border: 1px solid var(--color-border, #e2e8f0); display: flex; align-items: center; justify-content: center; font-size: 0.65rem; cursor: pointer; }
+      .modal-image-box { background-color: var(--color-surface-muted, #f8fafc); border: 1px solid var(--color-border, #e2e8f0); border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
       @media (max-width: 600px) {
         .customer-grid { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; gap: 12px 6px !important; }
         .customer-avatar-ring { width: 58px; height: 58px; }
