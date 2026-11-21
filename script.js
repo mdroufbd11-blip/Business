@@ -758,33 +758,91 @@ function compressImageToBlob(file, maxSize) {
 }
 
 async function uploadImageToSupabaseStorage(file, folder, recordKey) {
-  if (!file) return { ok: false, error: 'কোনো ছবি ফাইল নির্বাচন করা হয়নি।' };
+  if (!file) {
+    return { ok: false, error: 'কোনো ছবি ফাইল নির্বাচন করা হয়নি।' };
+  }
   if (!supabaseClient || !supabaseClient.storage) {
     return { ok: false, error: 'Supabase Storage সংযোগ পাওয়া যায়নি।' };
   }
-  const safeKey = String(recordKey || 'item')
-    .replace(/[^a-zA-Z0-9_-]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 40) || 'item';
-  const prepared = await compressImageToBlob(file, 800);
-  if (!prepared.blob) return { ok: false, error: 'ছবি প্রক্রিয়াকরণ ব্যর্থ হয়েছে।' };
-  const filePath = `${folder}/${safeKey}_${Date.now()}.${prepared.ext}`;
+
+  var bucketName = (typeof SUPABASE_STORAGE_BUCKET === 'string' && SUPABASE_STORAGE_BUCKET.trim())
+    ? SUPABASE_STORAGE_BUCKET.trim()
+    : '01';
+
+  var rawKey = String(recordKey || 'item').replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+  var safeKey = (rawKey || 'item').slice(0, 36);
+  var cleanFolder = String(folder || 'uploads').replace(/[^a-zA-Z0-9_-]/g, '').trim();
+
+  var prepared = await compressImageToBlob(file, 800);
+  if (!prepared || !prepared.blob) {
+    return { ok: false, error: 'ছবি প্রক্রিয়াকরণ ব্যর্থ হয়েছে।' };
+  }
+
+  var ext = String(prepared.ext || 'jpg').replace(/[^a-zA-Z0-9]/g, '') || 'jpg';
+  var contentType = prepared.contentType || 'image/jpeg';
+  var uniqueTag = Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  var fileName = safeKey + '_' + uniqueTag + '.' + ext;
+  var filePath = cleanFolder ? (cleanFolder + '/' + fileName) : fileName;
+
+  var uploadBody = prepared.blob;
   try {
-    const { error } = await supabaseClient.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .upload(filePath, prepared.blob, { cacheControl: '3600', upsert: true, contentType: prepared.contentType });
-    if (error) {
+    if (typeof File === 'function' && !(prepared.blob instanceof File)) {
+      uploadBody = new File([prepared.blob], fileName, { type: contentType });
+    }
+  } catch (wrapErr) {
+    uploadBody = prepared.blob;
+  }
+
+  try {
+    var uploadRes = await supabaseClient.storage
+      .from(bucketName)
+      .upload(filePath, uploadBody, {
+        cacheControl: '3600',
+        upsert: false,
+        contentType: contentType,
+      });
+
+    // Retry at bucket root without folder if subfolder path triggers 400
+    if (uploadRes.error && cleanFolder && String(uploadRes.error.statusCode || uploadRes.error.status || '') === '400') {
+      filePath = fileName;
+      uploadRes = await supabaseClient.storage
+        .from(bucketName)
+        .upload(filePath, uploadBody, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: contentType,
+        });
+    }
+
+    if (uploadRes.error) {
+      var errMsg = uploadRes.error.message || 'Unknown storage error';
+      var lowerMsg = errMsg.toLowerCase();
+      if (lowerMsg.indexOf('row-level security') !== -1 || lowerMsg.indexOf('policy') !== -1) {
+        return {
+          ok: false,
+          error: 'Storage RLS পলিসি ব্লক করেছে (Bucket "' + bucketName + '")। SQL Editor-এ storage.objects-এর INSERT/SELECT পলিসি চালু করুন: ' + errMsg,
+        };
+      }
+      if (lowerMsg.indexOf('bucket') !== -1 && lowerMsg.indexOf('not found') !== -1) {
+        return {
+          ok: false,
+          error: 'Supabase Storage-এ "' + bucketName + '" নামের Public Bucket তৈরি করা নেই।',
+        };
+      }
       return {
         ok: false,
-        error: `Storage আপলোড ব্যর্থ (Bucket "${SUPABASE_STORAGE_BUCKET}"): ${error.message}`,
+        error: 'Storage আপলোড ব্যর্থ (Bucket "' + bucketName + '"): ' + errMsg,
       };
     }
-    const { data } = supabaseClient.storage.from(SUPABASE_STORAGE_BUCKET).getPublicUrl(filePath);
-    const publicUrl = normalizeImageUrl(data && data.publicUrl);
-    if (!publicUrl) return { ok: false, error: 'পাবলিক URL তৈরি করা যায়নি।' };
-    return { ok: true, publicUrl };
+
+    var pubRes = supabaseClient.storage.from(bucketName).getPublicUrl(filePath);
+    var publicUrl = normalizeImageUrl(pubRes && pubRes.data ? pubRes.data.publicUrl : '');
+    if (!publicUrl) {
+      return { ok: false, error: 'পাবলিক URL তৈরি করা যায়নি।' };
+    }
+    return { ok: true, publicUrl: publicUrl };
   } catch (err) {
-    return { ok: false, error: (err && err.message) || 'Storage network error' };
+    return { ok: false, error: (err && err.message) ? err.message : 'Storage network error' };
   }
 }
 
